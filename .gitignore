@@ -1,0 +1,34 @@
+.env
+.env.*
+!.env.example
+
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+research.db
+checkpoints.db
+qdrant_storage/
+logs/
+
+.streamlit/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Test artifacts
+test.pdf
+scratch/
+
+# IDE
+*.code-workspace
+
+# OS
+.DS_Store
+Thumbs.db
