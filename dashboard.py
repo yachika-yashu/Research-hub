@@ -117,7 +117,16 @@ async def ingest_file(file):
             files = {"file": (file.name, file.getvalue(), "application/pdf")}
             progress_bar = st.progress(0, text="Initializing ingestion...")
             
-            async with aconnect_sse(client, "POST", f"{API_BASE_URL}/ingest", files=files, headers=get_headers()) as event_source:
+            resp = await client.post(f"{API_BASE_URL}/ingest", files=files, headers=get_headers())
+            if resp.status_code != 200:
+                st.error(f"Failed to enqueue task: {resp.text}")
+                progress_bar.empty()
+                return None
+            
+            job_id = resp.json().get("job_id")
+            progress_bar.progress(0, text="Job enqueued, connecting to worker stream...")
+            
+            async with aconnect_sse(client, "GET", f"{API_BASE_URL}/ingest/stream/{job_id}", headers=get_headers()) as event_source:
                 async for event in event_source.aiter_sse():
                     data = json.loads(event.data)
                     if data.get("type") == "progress":

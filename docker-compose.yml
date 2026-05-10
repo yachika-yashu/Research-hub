@@ -1,4 +1,111 @@
-version: '3.8'
+# Docker Compose Configuration for ResearchHub Intelligence Platform auto reload development setup
+
+# In this setup, project code lives on machine (for example, in /app) and is bind-mounted into the container at /app/app, 
+# meaning both the host and the container share the same files in real time. on editing and saving code locally,
+#  those changes are instantly reflected inside the running container. Development servers like Uvicorn or Streamlit are typically running 
+# in watch/reload mode, so they automatically detect file changes, restart the application process inside the container,
+# and apply the updates. As a result, we only need to refresh the browser to see the latest changes without rebuilding the image.
+# Now workflow is to run below code once to start everything, and then simply modify your code, save it, and refresh the browser to see updates immediately.
+# docker compose up -d --build 
+# Rebuilding is only needed when changing dependencies or Docker configuration, not for regular code edits.
+
+# NOTE ON VERSION:
+# 'version: 3.8' was historically used to define the Compose file format and is compatible with Docker Engine 19.03+
+# However, in modern Docker Compose (v2+), the version field is optional and often ignored.
+# Docker now follows the Compose Specification automatically.
+
+# Docker Compose Configuration for ResearchHub Intelligence API
+# This Docker Compose file sets up the following services:  
+# 1. PostgreSQL Database: Stores structured data and metadata.  
+# 2. Qdrant Vector Database: The Vault for storing and retrieving vector embeddings.  
+# 3. Redis: Caching layer for fast access to frequently used data.  
+# 4. API Service: The main backend service for handling requests and orchestrating interactions between components.  
+# 5. Worker Service: Background task processor for data ingestion and processing.  
+# 6. Dashboard: A Streamlit-based interface for researchers to interact with the system.
+
+# PORT MAPPING (IMPORTANT):
+# Format: "HOST_PORT:CONTAINER_PORT"
+# - Left side → Host machine (your laptop)
+# - Right side → Inside the container
+#
+# Examples:
+# - "8000:8000" → Access API at http://localhost:8000
+# - "8501:8501" → Access dashboard at http://localhost:8501
+# - API: 8000:8000
+# - Dashboard: 8501:8501  
+# - PostgreSQL: 5432:5432 (removed for security)
+# - Qdrant: 6333:6333 (removed for security)
+# - Redis: 6379:6379 (removed for security)
+# We are removing ports for internal services (PostgreSQL, Qdrant, Redis) to enhance security. 
+# These services will only be accessible to other containers, not directly from the host machine.
+
+# STORAGE VOLUMES:
+# Named volumes:
+# - postgres_data → Named volume (managed by Docker, persists DB data)
+#   Without this, PostgreSQL data is lost when container is removed
+# - redis_data → Named volume for Redis persistence (prevents data loss on restart)
+
+# Bind mounts:
+# - ./qdrant_storage:/qdrant/storage → Bind mount
+#   Data is stored in a local folder (relative to docker-compose.yml)
+#   Useful for inspecting files directly on host machine
+
+# Bind mounts (link your machine's folders to container):
+# 1- ./app:/app/app → Links your local app/ folder to container
+# 2- ./dashboard:/app/dashboard → Links your local dashboard/ folder to container
+#   Enables hot reload for Streamlit dashboard
+#   Remove in production for better security
+
+# ENVIRONMENT VARIABLES:
+# Can be set in a .env file or directly in the environment section.
+# The 'environment' section can override values from .env
+# The following variables are used:
+# - POSTGRES_DB: Name of the PostgreSQL database.
+# - POSTGRES_USER: Username for PostgreSQL authentication.
+# - POSTGRES_PASSWORD: Password for PostgreSQL authentication.
+# - QDRANT_URL: URL for connecting to the Qdrant service.
+# - REDIS_URL: URL for connecting to the Redis service.
+# - API_BASE_URL: Base URL for the API service, used by the dashboard to make requests to the API.  
+
+# BUILD CONTEXT:
+# build: . indicates that the API and Worker services image will be built using the Dockerfile 
+# located in the same directory as the docker-compose.yml file.
+
+# COMMANDS:
+# - Worker:
+#   command: arq app.worker.WorkerSettings
+#   → Starts background worker using Arq (async task queue)
+#
+# - Dashboard:
+#   command: streamlit run dashboard.py --server.port=8501 --server.address=0.0.0.0
+#   → Runs Streamlit UI accessible outside container
+#
+# - API:
+#   Typically runs via uvicorn (defined inside Dockerfile) uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+# NETWORKING:
+# Containers don't use localhost to talk to each other. They use service names like postgres:5432, 
+# qdrant:6333, http://qdrant:6333. This is because each container has its own network namespace. 
+# Docker Compose sets up a default network where services can communicate using their names as hostnames.
+
+# DEPENDS_ON AND HEALTHCHECKS:
+# 'depends_on' controls startup order of services.
+# 'condition: service_healthy' ensures a service is fully ready BEFORE dependent services start.
+# Without this condition, depends_on only ensures startup order, NOT readiness.
+#
+# Example:
+# - API waits for Postgres healthcheck to pass before starting
+# - This prevents "connection refused" errors
+#
+# Healthcheck Definition:
+# Each service includes a healthcheck that verifies it's ready to accept requests
+# - PostgreSQL: pg_isready check
+# - Qdrant: curl request to /collections endpoint
+# - Redis: redis-cli ping command
+# - API: curl request to /docs endpoint (FastAPI docs)
+ 
+
+version: '3.8' 
 
 services:
   postgres:
@@ -7,50 +114,96 @@ services:
       - POSTGRES_DB=${POSTGRES_DB}
       - POSTGRES_USER=${POSTGRES_USER}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-    ports:
-      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
-  # Vector Database (The Vault)
+  # Vector Database 
   qdrant:
     image: qdrant/qdrant:v1.12.0
-    ports:
-      - "6333:6333"
     volumes:
       - ./qdrant_storage:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:6333/collections || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   # Semantic Caching Layer
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   # ResearchHub Intelligence API
   api:
     build: .
+    image: researchhub:latest
     ports:
       - "8000:8000"
+    volumes:
+      - ./app:/app/app  # Bind mount for live code updates (optional, can be removed in production)
     env_file:
       - .env
     environment:
       - QDRANT_URL=http://qdrant:6333
       - REDIS_URL=redis://redis:6379/0
     depends_on:
-      - qdrant
-      - redis
-      - postgres
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/docs"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  # Background Task Queue (Ingestion Worker)
+  worker:
+    build: .
+    image: researchhub:latest # Reuse the same image as API since it contains all necessary code and dependencies
+    volumes:
+      - ./app:/app/app  # Bind mount for live code updates (optional, can be removed in production)
+    command: arq app.worker.WorkerSettings
+    env_file:
+      - .env
+    environment:
+      - QDRANT_URL=http://qdrant:6333
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
 
-  # Researcher Control Console (Dashboard)
+  # Frontend dashboard for researchers to interact with the system
   dashboard:
     build: .
+    image: researchhub:latest
     command: streamlit run dashboard.py --server.port=8501 --server.address=0.0.0.0
     ports:
       - "8501:8501"
+    volumes:
+      - ./dashboard:/app/dashboard  # Bind mount for live code updates (optional, can be removed in production)
     environment:
       - API_BASE_URL=http://api:8000/api/v1
     depends_on:
-      - api
+      api:
+        condition: service_healthy
 
 volumes:
   postgres_data:
+  redis_data:

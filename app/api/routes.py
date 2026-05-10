@@ -31,20 +31,57 @@ async def health_check():
 async def ingest_document(
     request: Request,
     file: UploadFile = File(...),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    current_user: User = Depends(get_current_user)
 ):
-    """Streaming Ingestion Pipeline for real-time UI updates."""
-    from app.services.ingestion import stream_process_ingestion
-    logger.info(f"INGEST: Started for file {file.filename} by user {current_user.username}")
+    """Enqueue document ingestion to the background worker."""
+    logger.info(f"INGEST: Enqueueing file {file.filename} by user {current_user.username}")
+    
+    content = await file.read()
+    job_id = str(uuid.uuid4())
+    
+    arq_pool = request.app.state.arq_pool
+    await arq_pool.enqueue_job(
+        "process_ingestion_task",
+        content,
+        file.filename,
+        current_user.id,
+        current_user.tenant_id,
+        job_id,
+        _job_id=job_id
+    )
+    
+    return {"status": "enqueued", "job_id": job_id, "filename": file.filename}
+
+@router.get("/ingest/stream/{job_id}")
+async def stream_ingestion_status(
+    job_id: str,
+    request: Request,
+    current_user: User = Depends(get_current_user)
+):
+    """Stream progress events from the background worker via Redis Pub/Sub."""
+    import redis.asyncio as redis
+    from app.core.config import REDIS_URL
     
     async def event_generator():
+        redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+        pubsub = redis_client.pubsub()
+        await pubsub.subscribe(f"ingest:{job_id}")
+        
         try:
-            content = await file.read()
-            async for event in stream_process_ingestion(content, file.filename, current_user, db):
-                yield f"data: {json.dumps(event)}\n\n"
-        except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+            async for message in pubsub.listen():
+                if message["type"] == "message":
+                    data = message["data"]
+                    if isinstance(data, str):
+                        try:
+                            json_data = json.loads(data)
+                            yield f"data: {data}\n\n"
+                            if json_data.get("type") in ["completed", "error", "eof"]:
+                                break
+                        except json.JSONDecodeError:
+                            pass
+        finally:
+            await pubsub.unsubscribe()
+            await redis_client.close()
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
