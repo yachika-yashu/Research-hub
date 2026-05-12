@@ -37,9 +37,8 @@ validate_security_config()
 async def lifespan(app: FastAPI):
     """Lifecycle management for the Collaborative RAG system."""
     # 1. Initialize storage backends before the first request arrives.
-    await init_db()
     init_cache_db()
-    await init_user_db()
+    init_user_db()
     await init_redis() # connect to Redis
     
     # Initialize task queue pool
@@ -54,17 +53,17 @@ async def lifespan(app: FastAPI):
         kwargs={"autocommit": True}
     )
     await pool.open()
-    
-    async with AsyncPostgresSaver(pool) as memory:
-        await memory.setup() # Ensure tables are created
-        app.state.graph = compile_graph(memory)
-        app.state.checkpointer = memory
-        app.state.pg_pool = pool
-        try:
-            yield
-        finally:
-            await pool.close()
-            await close_redis() # gracefully close redis connection
+
+    memory = AsyncPostgresSaver(pool)
+    await memory.setup()
+    app.state.graph = compile_graph(memory)
+    app.state.checkpointer = memory
+    app.state.pg_pool = pool
+    try:
+        yield
+    finally:
+        await pool.close()
+        await close_redis()
     
     print("Shutting down Research Intelligence Platform...")
 

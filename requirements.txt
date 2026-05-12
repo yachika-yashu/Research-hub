@@ -33,3 +33,4 @@ duckduckgo-search>=6.3.0
 httpx-sse>=0.4.0
 streamlit>=1.30.0
 locust>=2.31.0
+dill>=0.3.8,<0.4.0

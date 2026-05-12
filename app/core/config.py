@@ -23,7 +23,9 @@ ASSETS_DIR = "assets/images" # used in main.py
 # environments so the app behavior stays consistent across the lifecycle.
 # Local development should run Qdrant on localhost; containers override this
 # with the in-network service hostname.
-QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333") #used to get the URL of the qdrant vector database.if the environment variable exists (in docker-composefile or when deployed), use it; otherwise, default to localhost:6333 (Qdrant is a vector database used to store and search for vectors)
+QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
+# URL the user's browser uses to reach the API — needed for image src attributes in responses
+API_PUBLIC_URL = os.getenv("API_PUBLIC_URL", "http://localhost:8000") #used to get the URL of the qdrant vector database.if the environment variable exists (in docker-composefile or when deployed), use it; otherwise, default to localhost:6333 (Qdrant is a vector database used to store and search for vectors)
 QDRANT_COLLECTION = "research_platform"
 
 # Named Vectors for Hybrid Search 

@@ -1,5 +1,5 @@
 import os
-from arq import create_pool
+from arq import create_pool, cron
 from arq.connections import RedisSettings
 from dotenv import load_dotenv
 
@@ -66,14 +66,90 @@ async def process_ingestion_task(ctx, file_content: bytes, filename: str, user_i
             await redis_client.publish(channel, json.dumps(event))
             
     except Exception as e:
-        await redis_client.publish(channel, json.dumps({"type": "error", "message": str(e)}))
+        import traceback
+        await redis_client.publish(channel, json.dumps({"type": "error", "message": f"{type(e).__name__}: {e}\n{traceback.format_exc()}"}))
     finally:
         db.close()
         # Publish an end marker so subscribers can close connection
         await redis_client.publish(channel, json.dumps({"type": "eof"}))
 
+async def check_arxiv_monitors_task(ctx):
+    """
+    Cron job: runs once daily (07:00 UTC) to poll Arxiv for new papers matching
+    each active monitor's keywords. Outbound HTTP only — no webhook, no public URL.
+    New papers are stored as ArxivAlert rows; duplicates (same arxiv_id + monitor_id)
+    are silently skipped via INSERT conflict handling.
+    """
+    import json
+    import arxiv
+    from datetime import datetime, timezone
+    from app.core.database import SessionLocal, ArxivMonitor, ArxivAlert
+
+    db = SessionLocal()
+    try:
+        monitors = db.query(ArxivMonitor).filter(ArxivMonitor.is_active == True).all()
+        client = arxiv.Client()
+
+        for monitor in monitors:
+            try:
+                search = arxiv.Search(
+                    query=monitor.keywords,
+                    max_results=20,
+                    sort_by=arxiv.SortCriterion.SubmittedDate,
+                    sort_order=arxiv.SortOrder.Descending,
+                )
+                cutoff = monitor.last_checked_at or datetime(2000, 1, 1, tzinfo=timezone.utc)
+                if cutoff.tzinfo is None:
+                    cutoff = cutoff.replace(tzinfo=timezone.utc)
+
+                # Collect existing arxiv_ids for this monitor to deduplicate
+                existing_ids = {
+                    row.arxiv_id
+                    for row in db.query(ArxivAlert.arxiv_id)
+                        .filter(ArxivAlert.monitor_id == monitor.id)
+                        .all()
+                }
+
+                for result in client.results(search):
+                    published = result.published
+                    if published.tzinfo is None:
+                        published = published.replace(tzinfo=timezone.utc)
+                    if published <= cutoff:
+                        break  # Results are newest-first; stop when we reach old papers
+
+                    short_id = result.entry_id.split("/abs/")[-1]
+                    if short_id in existing_ids:
+                        continue
+
+                    db.add(ArxivAlert(
+                        monitor_id=monitor.id,
+                        tenant_id=monitor.tenant_id,
+                        arxiv_id=short_id,
+                        title=result.title,
+                        abstract=result.summary,
+                        authors=json.dumps([a.name for a in result.authors]),
+                        published_at=result.published.isoformat(),
+                    ))
+                    existing_ids.add(short_id)
+
+                monitor.last_checked_at = datetime.now(timezone.utc)
+            except Exception as e:
+                # Non-fatal: one monitor failing should not block others
+                print(f"ARXIV_MONITOR: Failed for monitor {monitor.id} — {e}")
+
+        db.commit()
+    except Exception as e:
+        print(f"ARXIV_MONITOR: Cron task failed — {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
 class WorkerSettings:
     functions = [process_ingestion_task]
+    # Run Arxiv monitor check every day at 07:00 UTC.
+    # Uses arq's cron scheduler — the worker process must be running for this to fire.
+    cron_jobs = [cron(check_arxiv_monitors_task, hour=7, minute=0)]
     redis_settings = redis_settings
     on_startup = startup
     on_shutdown = shutdown

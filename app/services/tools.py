@@ -7,6 +7,7 @@ from langchain_community.utilities import ArxivAPIWrapper
 from langchain_experimental.utilities import PythonREPL
 from app.services.vector_store import search_vdb
 from app.core.globals import openai_client
+from app.core.config import API_PUBLIC_URL
 
 # Initialize utilities
 arxiv_wrapper = ArxivAPIWrapper()
@@ -31,7 +32,7 @@ def python_repl_tool(code: str) -> str:
     return python_repl.run(code)
 
 @tool
-async def rag_tool(query: str, tenant_id: str, limit: int = 5, filename: Optional[str] = None) -> str:
+async def rag_tool(query: str, tenant_id: str, limit: int = 8, filename: Optional[str] = None) -> str:
     """
     Search the local research vault (internal database) for summaries, technical details, and full paper content.
     This is the EXCLUSIVE tool for accessing papers the user has uploaded to their workspace ({tenant_id}).
@@ -40,32 +41,74 @@ async def rag_tool(query: str, tenant_id: str, limit: int = 5, filename: Optiona
     Returns text chunks and citations.
     """
     from app.schemas.models import QueryFilters
-    # High-Recall Enhancement (Phase 13)
-    # If the user is looking for visuals, we expand search depth and keywords
-    visual_keywords = ["figure", "diagram", "table", "graph", "chart", "map", "illustration"]
+    from app.services.vector_store import get_qdrant, QDRANT_COLLECTION
+    from qdrant_client.http import models as rest
+
+    # Visual queries need broader search: diagrams/figures are rarely described
+    # with the exact query keywords, so we boost depth and add structural terms
+    # to improve the chance of retrieving image-containing chunks.
+    # "architecture" is included because ML papers always have architecture diagrams.
+    visual_keywords = [
+        "figure", "diagram", "table", "graph", "chart",
+        "map", "illustration", "architecture", "plot", "image", "show", "visual"
+    ]
     is_visual_query = any(k in query.lower() for k in visual_keywords)
-    
+
     adj_limit = limit
     adj_query = query
     if is_visual_query:
-        adj_limit = 12  # Double depth for elusive diagrams
-        adj_query = f"Research {query} Figure Table Diagram" # Boost structured matches
-    
+        adj_limit = 15
+        adj_query = f"Research {query} Figure Table Diagram Architecture"
+
     filters = QueryFilters(filename=filename) if filename else None
     results = await search_vdb(adj_query, tenant_id, limit=adj_limit, filters=filters)
     if not results:
         return f"No relevant information found in the local research vault for {filename or 'the workspace'}."
-    
+
+    # Secondary pass: if none of the top results contain image markdown, fetch
+    # image-bearing chunks explicitly so they are never silently omitted.
+    # The reranker can rank text-only chunks above image chunks for factual
+    # queries even when the image chunk is the most relevant visual answer.
+    has_images = any("![Figure]" in r.get("text", "") for r in results)
+    if not has_images:
+        try:
+            client = get_qdrant()
+            img_filter_conditions = [
+                rest.FieldCondition(key="tenant_id", match=rest.MatchValue(value=tenant_id)),
+            ]
+            if filename:
+                img_filter_conditions.append(
+                    rest.FieldCondition(key="metadata.filename", match=rest.MatchValue(value=filename))
+                )
+            img_scroll, _ = client.scroll(
+                collection_name=QDRANT_COLLECTION,
+                scroll_filter=rest.Filter(must=img_filter_conditions),
+                limit=200,
+                with_payload=True,
+                with_vectors=False,
+            )
+            # Append up to 3 image chunks that aren't already in results
+            existing_ids = {r.get("chunk_id") for r in results}
+            appended = 0
+            for point in img_scroll:
+                text = point.payload.get("text", "")
+                if "![Figure]" in text and point.payload.get("chunk_id") not in existing_ids:
+                    results.append(point.payload)
+                    appended += 1
+                    if appended >= 3:
+                        break
+        except Exception:
+            pass  # secondary pass is best-effort, never block the main response
+
     formatted_context = f"--- LOCAL VAULT CONTEXT ({filename or 'Global'}) ---\n"
     for i, hit in enumerate(results):
         text = hit['text']
+        # Legacy chunks stored image path in media_url instead of inline markdown.
+        # Reconstruct the full URL so the LLM receives a renderable image tag.
         media = hit.get('media_url')
         if media:
-            # Construct absolute URL for the frontend
-            # We assume the backend is reachable at localhost:8001 for now
-            image_url = f"http://127.0.0.1:8000{media}"
-            text += f"\n[IMAGE_REFERENCE: {image_url}]"
-            
+            image_url = f"{API_PUBLIC_URL}{media}"
+            text += f"\n\n![Figure]({image_url})"
         formatted_context += f"[{i}] {text}\n"
     return formatted_context
 

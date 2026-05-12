@@ -123,16 +123,17 @@ services:
       retries: 5
 
   # Vector Database 
+
   qdrant:
-    image: qdrant/qdrant:v1.12.0
+    image: qdrant/qdrant:v1.13.6
     volumes:
       - ./qdrant_storage:/qdrant/storage
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:6333/collections || exit 1"]
+      test: [ "CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1" ]
       interval: 10s
       timeout: 5s
-      retries: 5
-
+      retries: 10
+      start_period: 20s
   # Semantic Caching Layer
   redis:
     image: redis:7-alpine
@@ -152,11 +153,15 @@ services:
       - "8000:8000"
     volumes:
       - ./app:/app/app  # Bind mount for live code updates (optional, can be removed in production)
+      - ./assets:/app/assets  # Shared assets dir so worker-extracted images are served by API
     env_file:
       - .env
     environment:
       - QDRANT_URL=http://qdrant:6333
       - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      - CHECKPOINTS_DB_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      - TRUSTED_HOSTS=localhost,127.0.0.1,api,api:8000
     depends_on:
       postgres:
         condition: service_healthy
@@ -173,14 +178,17 @@ services:
   worker:
     build: .
     image: researchhub:latest # Reuse the same image as API since it contains all necessary code and dependencies
-    volumes:
-      - ./app:/app/app  # Bind mount for live code updates (optional, can be removed in production)
     command: arq app.worker.WorkerSettings
     env_file:
       - .env
     environment:
       - QDRANT_URL=http://qdrant:6333
       - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      - CHECKPOINTS_DB_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    volumes:
+      - ./app:/app/app
+      - ./assets:/app/assets  # Shared with API so extracted images are accessible
     depends_on:
       postgres:
         condition: service_healthy

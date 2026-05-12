@@ -5,9 +5,10 @@ from qdrant_client.http import models as rest # Used to work with Qdrant models,
 from app.core.config import (
     GENERATION_MODEL, EMBEDDING_MODEL, EMBEDDING_DIMENSIONS, REDIS_EXACT_CACHE_TTL_SECONDS
 )
-from app.core.globals import openai_client # Used to access the centralized OpenAI api key
-from app.core.qdrant import get_qdrant_client # This returns a shared Qdrant client instance that is used throughout the application to interact with the Qdrant vector database. # This is used to get the qdrant client instance
-from app.core.redis import get_redis_client # This returns a shared Redis client instance that is used throughout the application to interact with the Redis in-memory data store. # This is used to get the redis client instance
+from app.core.globals import openai_client
+from app.core.qdrant import get_qdrant_client
+from app.core.redis import get_redis_client
+from app.core.logging import logger
 
 # this is where two layer catching system is handled  1. exact cache(redis)  2. semantic cache(vector DB Qdrant)
 
@@ -54,13 +55,13 @@ async def exact_cache_get(tenant_id: str, query: str) -> Optional[dict]:
     try:
         cached = await client.get(cache_key)
     except Exception as exc:
-        print(f"CACHE: Redis exact-cache read bypassed due to error: {exc}")
+        logger.warning(f"CACHE: Redis exact-cache read bypassed — {exc}")
         return None
 
     if not cached:
         return None
 
-    print("CACHE: Exact Redis hit.")
+    logger.info("CACHE: Exact Redis hit.")
     return json.loads(cached)
 
 
@@ -70,9 +71,9 @@ async def exact_cache_set(tenant_id: str, query: str, response: dict) -> None:
     cache_key = _build_exact_cache_key(tenant_id, query)
     try:
         await client.set(cache_key, json.dumps(response), ex=REDIS_EXACT_CACHE_TTL_SECONDS)
-        print(f"CACHE: Exact Redis storage complete for '{query[:30]}...'.")
+        logger.info(f"CACHE: Exact Redis stored for '{query[:30]}...'")
     except Exception as exc:
-        print(f"CACHE: Redis exact-cache write bypassed due to error: {exc}")
+        logger.warning(f"CACHE: Redis exact-cache write bypassed — {exc}")
 
 
 async def invalidate_exact_cache_for_tenant(tenant_id: str) -> None:
@@ -89,9 +90,26 @@ async def invalidate_exact_cache_for_tenant(tenant_id: str) -> None:
         keys = [key async for key in client.scan_iter(match=pattern)]
         if keys:
             await client.delete(*keys)
-            print(f"CACHE: Invalidated {len(keys)} exact-cache entries for tenant {tenant_id}.")
+            logger.info(f"CACHE: Invalidated {len(keys)} exact-cache entries for tenant {tenant_id}")
     except Exception as exc:
-        print(f"CACHE: Redis exact-cache invalidation bypassed due to error: {exc}")
+        logger.warning(f"CACHE: Redis exact-cache invalidation bypassed — {exc}")
+
+async def invalidate_semantic_cache_for_tenant(tenant_id: str) -> None:
+    """Delete all semantic cache entries for a tenant so re-indexed papers return fresh answers."""
+    client = get_qdrant()
+    try:
+        client.delete(
+            collection_name=CACHE_COLLECTION,
+            points_selector=rest.FilterSelector(
+                filter=rest.Filter(
+                    must=[rest.FieldCondition(key="tenant_id", match=rest.MatchValue(value=tenant_id))]
+                )
+            )
+        )
+        logger.info(f"CACHE: Invalidated semantic cache for tenant {tenant_id}")
+    except Exception as exc:
+        logger.warning(f"CACHE: Semantic cache invalidation bypassed — {exc}")
+
 
 async def semantic_cache_get(tenant_id: str, query: str) -> Optional[dict]:
     """Retrieves cached research responses using semantic similarity."""
@@ -112,7 +130,7 @@ async def semantic_cache_get(tenant_id: str, query: str) -> Optional[dict]:
     ).points
     
     if results and results[0].score >= SIMILARITY_THRESHOLD:
-        print(f"CACHE: Semantic Hit (Score: {results[0].score:.4f})")
+        logger.info(f"CACHE: Semantic hit (score: {results[0].score:.4f})")
         return json.loads(results[0].payload["response_json"])
     
     return None
@@ -144,4 +162,4 @@ async def semantic_cache_set(tenant_id: str, query: str, response: dict):
             )
         ]
     )
-    print(f"CACHE: Semantic storage complete for '{query[:30]}...'")
+    logger.info(f"CACHE: Semantic stored for '{query[:30]}...'")

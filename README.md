@@ -1,231 +1,177 @@
 # ResearchHub
 
-A production-grade, multi-tenant **Collaborative Research Intelligence Platform** powered by advanced Retrieval-Augmented Generation (RAG), LangGraph state machines, and semantic caching.
+A production-grade AI research assistant for academics and engineers. Upload PDFs, chat with your papers, run literature reviews, monitor Arxiv — all in one self-hosted platform.
 
-## 🎯 Overview
-
-ResearchHub is a complete research assistant system designed for teams to:
-- **Ingest** research papers, documents, and data sources
-- **Index** content using semantic embeddings and hybrid search
-- **Query** with an AI agent that retrieves and synthesizes information
-- **Collaborate** with multi-tenant support and role-based access control
-- **Cache** responses intelligently to reduce API costs
-
-### Key Features
-
-✨ **Multi-Tenant Architecture** - Isolated workspaces for teams and organizations  
-🤖 **LangGraph Agent** - Stateful AI reasoning with tool integration  
-⚡ **Semantic + Exact Caching** - Redis + Qdrant dual-cache strategy  
-🔐 **Production Security** - JWT authentication, environment isolation  
-📊 **Real-time Dashboard** - Streamlit-based research control console  
-🚀 **Fully Containerized** - Docker Compose setup for local/production  
-
-## 🏗️ System Architecture
-
-```
-Frontend (Streamlit)
-    ↓
-FastAPI API Server
-    ↓
-LangGraph Agent ← ChatOpenAI (LLM)
-    ↓ ↓ ↓
-Qdrant (Vectors) | Redis (Cache) | PostgreSQL (Metadata)
-```
-
-### Core Components
-
-| Component | Purpose |
-|-----------|---------|
-| **dashboard.py** | Streamlit frontend with auth, chat, document uploads |
-| **main.py** | FastAPI ASGI application with lifecycle management |
-| **app/core/graph.py** | LangGraph agent definition and compilation |
-| **app/core/cache.py** | Dual-layer caching (exact + semantic) |
-| **app/core/qdrant.py** | Vector database integration |
-| **app/services/ingestion.py** | Document processing pipeline |
-
-## 🚀 Quick Start
-
-### Prerequisites
-- Python 3.11+
-- Docker & Docker Compose (optional, recommended for services)
-- OpenAI API key
-
-### Local Setup
-
-1. **Clone and setup environment:**
-   ```bash
-   git clone https://github.com/yourusername/researhub.git
-   cd researhub
-   python -m venv venv
-   source venv/Scripts/activate  # Windows: venv\Scripts\activate
-   ```
-
-2. **Install dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-3. **Configure environment:**
-   ```bash
-   cp .env.example .env
-   # Edit .env with your API keys and database credentials
-   ```
-
-4. **Start services (Docker Compose recommended):**
-   ```bash
-   docker-compose up -d
-   ```
-
-5. **Run migrations and start servers:**
-   ```bash
-   # In separate terminals:
-   python main.py          # API on http://localhost:8000
-   streamlit run dashboard.py  # Dashboard on http://localhost:8501
-   ```
-
-## 📖 Documentation
-
-Comprehensive documentation is available in the `docs/` directory:
-
-- [00_SYSTEM_OVERVIEW.md](docs/00_SYSTEM_OVERVIEW.md) - System architecture and components
-- [01_REQUEST_LIFECYCLE.md](docs/01_REQUEST_LIFECYCLE.md) - How requests flow through the system
-- [ARCHITECTURE.md](docs/ARCHITECTURE.md) - Detailed system design
-- [DEPLOYMENT_PRODUCTION.md](docs/13_DEPLOYMENT_PRODUCTION.md) - Production deployment guide
-- [FUNCTIONALITY_MAP.md](docs/FUNCTIONALITY_MAP.md) - Feature capabilities by file
-
-## 🔧 Configuration
-
-### Environment Variables
-
-```env
-# OpenAI
-OPENAI_API_KEY=sk-...
-
-# Database
-DATABASE_URL=postgresql://researhub:password@localhost:5432/researhub
-POSTGRES_DB=researhub
-POSTGRES_USER=researhub
-
-# Redis
-REDIS_URL=redis://localhost:6379/0
-
-# Qdrant
-QDRANT_URL=http://localhost:6333
-
-# Security
-JWT_SECRET_KEY=your_long_random_secret_here
-
-# LangChain (optional)
-LANGCHAIN_TRACING_V2=true
-LANGCHAIN_API_KEY=ls...
-LANGCHAIN_PROJECT=researhub-project
-```
-
-See [.env.example](.env.example) for all configuration options.
-
-## 🐳 Docker Deployment
-
-### Local Development with Docker Compose
-
-```bash
-docker-compose up -d
-```
-
-This starts:
-- PostgreSQL database
-- Redis cache
-- Qdrant vector database
-- ResearchHub API (port 8000)
-
-### Production Deployment
-
-See [docs/13_DEPLOYMENT_PRODUCTION.md](docs/13_DEPLOYMENT_PRODUCTION.md) for:
-- AWS ECR/ECS setup
-- Environment configuration
-- Scaling strategies
-- Monitoring and logging
-
-## 🔐 Security
-
-- **Environment Isolation**: API keys stored only in `.env` (never committed)
-- **JWT Authentication**: Secure multi-tenant access control
-- **Database Credentials**: Environment-based, rotatable
-- **CORS & TrustedHost**: Configurable security headers
-- **Rate Limiting**: Ready for production rate limiting
-
-### Pre-deployment Checklist
-
-- [ ] Rotate `JWT_SECRET_KEY` in production
-- [ ] Use strong database passwords
-- [ ] Enable HTTPS/TLS in production
-- [ ] Configure CORS for your domain
-- [ ] Set appropriate database backups
-- [ ] Enable monitoring and logging
-
-## 📊 Performance
-
-- **Semantic Caching**: Reduces embedding API calls by ~70%
-- **Exact Query Cache**: Instant responses for repeated queries
-- **Hybrid Search**: BM25 + Dense vectors in Qdrant
-- **Connection Pooling**: SQLAlchemy + Redis connections
-
-See [docs/12_PERFORMANCE_AND_SCALING.md](docs/12_PERFORMANCE_AND_SCALING.md) for optimization details.
-
-## 🧪 Testing & Development
-
-### Run Tests
-
-```bash
-pytest tests/
-```
-
-### Profile Performance
-
-```bash
-python perf/profile_hotspots.py
-python perf/benchmark_api.py
-```
-
-### Development Setup
-
-```bash
-# Install dev dependencies
-pip install -e ".[dev]"
-
-# Run with auto-reload
-uvicorn main:app --reload
-streamlit run dashboard.py
-```
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature/amazing-feature`
-3. Make changes and test
-4. Commit: `git commit -m 'Add amazing feature'`
-5. Push: `git push origin feature/amazing-feature`
-6. Open a Pull Request
-
-## 📝 License
-
-This project is licensed under the MIT License - see [LICENSE](LICENSE) file for details.
-
-## 🙋 Support
-
-For questions and support:
-- Open an issue on GitHub
-- Check existing documentation in `docs/`
-- Review error logs in `logs/` directory
-
-## 🗺️ Roadmap
-
-- [ ] Advanced analytics dashboard
-- [ ] Multi-modal document support (images, audio)
-- [ ] Fine-tuned embedding models
-- [ ] Distributed caching
-- [ ] Advanced observability features
-- [ ] Kubernetes deployment templates
+Built with FastAPI · LangGraph · Qdrant · Redis · PostgreSQL · Streamlit · Docker
 
 ---
 
-**Built with:** FastAPI · LangChain · LangGraph · Qdrant · Redis · PostgreSQL · Streamlit
+## Features
+
+| Feature | Description |
+|---|---|
+| **Conversational Chat** | Multi-turn Q&A over your papers with persistent thread memory |
+| **Hybrid Search** | Dense + sparse (BM25) retrieval fused via RRF for best-of-both results |
+| **Bulk Ingestion** | Upload multiple PDFs with real-time progress tracking |
+| **Auto-Summary** | 5-sentence summary generated at ingest time |
+| **Structured Extraction** | Contribution · dataset · baselines · limitations extracted per paper |
+| **BibTeX Export** | One-click `.bib` file for your entire vault |
+| **Literature Review** | AI-synthesised review across 2–5 papers, streamable and exportable |
+| **Paper Comparison** | Side-by-side analysis of two papers on a specific question |
+| **Knowledge Graph** | Visual map of paper relationships by shared authors and keywords |
+| **Passage Search** | Raw vector retrieval — no LLM, just the exact matching chunks |
+| **Reading Queue** | Track papers to read before they enter the vault |
+| **Arxiv Monitoring** | Daily keyword watches — new papers alert you automatically |
+| **Notes Editor** | Per-user Markdown notes with live preview |
+| **Usage Dashboard** | Token usage, cost tracking, and faithfulness metrics |
+| **Multi-tenancy** | Team-based isolation — each team sees only its own vault |
+
+See [FEATURES.md](FEATURES.md) for detailed examples of each feature.
+
+---
+
+## Architecture
+
+```
+Browser
+  │
+  ▼
+Streamlit Dashboard (port 8501)
+  │  server-side HTTP calls
+  ▼
+FastAPI (port 8000)
+  ├── LangGraph agent  ──► OpenAI GPT-4o-mini
+  ├── Qdrant           ──► hybrid vector search (dense + BM25)
+  ├── PostgreSQL       ──► users · notes · summaries · checkpoints
+  └── Redis            ──► exact cache · Pub/Sub for job progress
+
+arq Worker (background)
+  ├── PDF extraction (docling + pytesseract fallback)
+  ├── Chunking · embedding · Qdrant upsert
+  ├── LLM summary + structured field extraction
+  └── Arxiv daily monitor cron
+```
+
+---
+
+## Stack
+
+- **Backend:** FastAPI, LangGraph, LangChain
+- **AI:** OpenAI `gpt-4o-mini` + `text-embedding-3-small`
+- **Vector DB:** Qdrant (hybrid dense + sparse search)
+- **Relational DB:** PostgreSQL (via SQLAlchemy + psycopg3)
+- **Cache:** Redis (exact-match + semantic two-layer cache)
+- **Task Queue:** arq (async Redis-backed workers)
+- **Frontend:** Streamlit
+- **Containers:** Docker Compose
+
+---
+
+## Prerequisites
+
+- [Docker](https://docs.docker.com/get-docker/) and Docker Compose v2
+- An [OpenAI API key](https://platform.openai.com/api-keys)
+
+That's it. Everything else (Postgres, Qdrant, Redis) runs in Docker.
+
+---
+
+## Quick Start
+
+```bash
+# 1. Clone
+git clone https://github.com/yachika-yashu/Research-hub
+cd research-hub
+
+# 2. Configure
+cp .env.example .env
+# Open .env and set:
+#   OPENAI_API_KEY=sk-...
+#   JWT_SECRET_KEY=<run: python -c "import secrets; print(secrets.token_hex(32))">
+
+# 3. Run
+docker compose up -d --build
+
+# 4. Open
+# Dashboard → http://localhost:8501
+# API docs  → http://localhost:8000/docs
+```
+
+Register an account on first visit. The team code you enter groups users into the same vault.
+
+---
+
+## Environment Variables
+
+Copy `.env.example` to `.env`. Required variables:
+
+| Variable | Description |
+|---|---|
+| `OPENAI_API_KEY` | Your OpenAI API key |
+| `JWT_SECRET_KEY` | Random secret for signing JWTs — generate with `secrets.token_hex(32)` |
+| `POSTGRES_PASSWORD` | Password for the local Postgres container |
+
+All other variables have working defaults for local Docker development.
+
+Optional:
+
+| Variable | Description |
+|---|---|
+| `LANGCHAIN_API_KEY` | Enables LangSmith tracing for debugging the agent |
+| `GOOGLE_CLIENT_ID/SECRET` | Enables Google SSO login |
+
+---
+
+## Project Structure
+
+```
+research-hub/
+├── app/
+│   ├── api/
+│   │   ├── routes.py        # All REST endpoints
+│   │   └── auth.py          # JWT + Google SSO
+│   ├── core/
+│   │   ├── config.py        # All env var loading
+│   │   ├── database.py      # SQLAlchemy models
+│   │   ├── graph.py         # LangGraph agent definition
+│   │   ├── logic.py         # Chunking, embedding, BibTeX utils
+│   │   ├── cache.py         # Two-layer cache (Redis + Qdrant)
+│   │   └── guardrails.py    # Pre-retrieval query filtering
+│   ├── services/
+│   │   ├── ingestion.py     # PDF → chunks → Qdrant pipeline
+│   │   ├── extractor.py     # docling + OCR text extraction
+│   │   ├── vector_store.py  # Qdrant hybrid search
+│   │   └── tools.py         # LangGraph tool definitions
+│   └── worker.py            # arq task definitions + Arxiv cron
+├── dashboard.py             # Streamlit UI
+├── main.py                  # FastAPI app entry point
+├── docker-compose.yml       # Development setup
+├── docker-compose.prod.yml  # Production setup (with Caddy HTTPS)
+├── Caddyfile                # Reverse proxy + TLS config
+├── Dockerfile
+├── requirements.txt
+└── .env.example
+```
+
+---
+
+## Production Deployment
+
+A production-ready Docker Compose with Caddy (automatic HTTPS) is included:
+
+```bash
+cp .env.example .env.production
+# Fill in .env.production — especially OPENAI_API_KEY, JWT_SECRET_KEY,
+# POSTGRES_PASSWORD, and your domain in ALLOWED_ORIGINS / TRUSTED_HOSTS.
+# Update Caddyfile with your actual domain.
+
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+See [Caddyfile](Caddyfile) and [docker-compose.prod.yml](docker-compose.prod.yml) for details. DNS must point to your server before Caddy can issue TLS certificates.
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).

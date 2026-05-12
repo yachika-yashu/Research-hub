@@ -12,6 +12,7 @@ from app.core.config import (
     GENERATION_MODEL, EMBEDDING_MODEL, EMBEDDING_DIMENSIONS, TOKEN_ENCODER
 )
 from app.schemas.models import DocumentChunk, CleaningMetadata, ChunkingStats, PaperMetadata
+from app.core.logging import logger
 
 def clean_text(text: str) -> Tuple[str, CleaningMetadata]:
     """Production cleaning pipeline with normalization and de-noising."""
@@ -146,7 +147,7 @@ async def extract_paper_metadata(openai_client, text_sample: str) -> PaperMetada
                 
         return PaperMetadata(**data)
     except Exception as e:
-        print(f"METADATA: Failed to extract (using empty default): {e}")
+        logger.warning(f"METADATA: Failed to extract, using empty default — {e}")
         return PaperMetadata(title="Unknown Research Paper", authors=[], year=None)
 
 async def embed_chunks(openai_client, chunks: List[DocumentChunk]) -> List[DocumentChunk]:
@@ -185,7 +186,7 @@ async def verify_faithfulness(openai_client, query: str, answer: str, context_ch
         )
         return json.loads(resp.choices[0].message.content)
     except Exception as e:
-        print(f"VERIFIER: Verification failed: {e}")
+        logger.warning(f"VERIFIER: Verification failed — {e}")
         return {"faithfulness_score": 1.0, "reasoning": "Verification bypassed due to system error.", "is_well_grounded": True}
 
 def count_tokens(text: str) -> int:
@@ -204,6 +205,229 @@ def estimate_cost(input_tokens: int, output_tokens: int, model: str) -> float:
     config = rates.get(model, {"in": 0.0, "out": 0.0})
     cost = (input_tokens / 1_000_000 * config["in"]) + (output_tokens / 1_000_000 * config["out"])
     return round(cost, 6)
+
+async def generate_paper_summary(openai_client, text_sample: str, title: str) -> str:
+    """Generates a concise 5-sentence plain-English summary for quick paper understanding."""
+    prompt = (
+        f"Write exactly 5 sentences summarizing the research paper titled '{title}'.\n"
+        "Cover in order: (1) the problem addressed, (2) methodology used, "
+        "(3) main findings, (4) significance or contribution, (5) limitations or future work.\n\n"
+        f"PAPER EXCERPT:\n{text_sample[:4000]}"
+    )
+    try:
+        resp = await openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+            max_tokens=350
+        )
+        return resp.choices[0].message.content.strip()
+    except Exception as e:
+        logger.warning(f"SUMMARY: Failed to generate — {e}")
+        return ""
+
+
+# =============================================================================
+# BIBTEX UTILITIES
+# =============================================================================
+
+# Common English stopwords to skip when picking the title keyword for bibtex keys
+_TITLE_STOPWORDS = {"a", "an", "the", "on", "in", "of", "for", "to", "with",
+                    "and", "or", "is", "are", "from", "by", "at", "as", "via"}
+
+def generate_bibtex_key(authors: list, year, title: str) -> str:
+    """Builds a AuthorYearWord style BibTeX citation key from paper metadata.
+    Pure function — no LLM needed. Falls back gracefully when fields are missing."""
+    last = "Unknown"
+    if authors:
+        last = authors[0].split()[-1].replace(",", "").replace(".", "")
+    yr = str(year) if year else "nd"
+    word = "Paper"
+    for w in re.split(r'\W+', title or ""):
+        if w.lower() not in _TITLE_STOPWORDS and len(w) > 2:
+            word = w.capitalize()
+            break
+    return f"{last}{yr}_{word}"
+
+
+def build_bibtex_entry(paper: dict, key: str) -> str:
+    """Formats one paper dict into a @article or @misc BibTeX block.
+    Pure function — used by the BibTeX export endpoint."""
+    authors_list = paper.get("authors") or []
+    author_str = " and ".join(authors_list) if authors_list else "Unknown"
+    entry_type = "article" if paper.get("journal") else "misc"
+
+    lines = [f"@{entry_type}{{{key},"]
+    lines.append(f'  title = {{{paper.get("title") or "Unknown"}}},' )
+    lines.append(f'  author = {{{author_str}}},')
+    if paper.get("year"):
+        lines.append(f'  year = {{{paper["year"]}}},')
+    if paper.get("journal"):
+        lines.append(f'  journal = {{{paper["journal"]}}},')
+    if paper.get("doi"):
+        lines.append(f'  doi = {{{paper["doi"]}}},')
+        lines.append(f'  url = {{https://doi.org/{paper["doi"]}}},')
+    lines.append("}")
+    return "\n".join(lines)
+
+
+# =============================================================================
+# STRUCTURED EXTRACTION (runs at ingest time alongside auto-summary)
+# =============================================================================
+
+async def extract_structured_fields(openai_client, text_sample: str) -> dict:
+    """Extracts 4 structured research fields from paper text using a single LLM call.
+    Stored in paper_details so the researcher can compare papers without re-reading.
+    Wrapped in try/except so a failure here never blocks the main ingest."""
+    prompt = (
+        "Read the research paper excerpt below and extract exactly these four fields.\n"
+        "Return ONLY a JSON object with keys:\n"
+        "  contribution  (string: the main technical contribution in 1-2 sentences)\n"
+        "  dataset       (string: dataset(s) or benchmark(s) used, or null)\n"
+        "  baselines     (list of strings: models or methods used for comparison)\n"
+        "  limitations   (string: stated or implied limitations, 1-2 sentences)\n\n"
+        f"PAPER TEXT:\n{text_sample[:5000]}"
+    )
+    try:
+        resp = await openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            temperature=0.0,
+            max_tokens=400
+        )
+        return json.loads(resp.choices[0].message.content)
+    except Exception as e:
+        logger.warning(f"STRUCTURED: Extraction failed — {e}")
+        return {}
+
+
+async def extract_bibliography(openai_client, text_sample: str) -> list:
+    """Extracts the bibliography from the last portion of paper text.
+    Returns a list of {title, authors, year, doi, arxiv_id} dicts.
+    Capped at 60 refs; failure is non-fatal and returns empty list."""
+    # Bibliography is almost always in the final 25% of a paper
+    bib_section = text_sample[max(0, int(len(text_sample) * 0.72)):][:6000]
+    if len(bib_section) < 200:
+        return []
+
+    prompt = (
+        "Extract the bibliography/references from this text.\n"
+        "Return a JSON object with one key 'references': a list of objects, each with:\n"
+        "  title (string), authors (list of strings), year (int or null), doi (string or null)\n"
+        "Include at most 60 references. If no references are found, return {\"references\": []}.\n\n"
+        f"TEXT:\n{bib_section}"
+    )
+    try:
+        resp = await openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            temperature=0.0,
+            max_tokens=3000
+        )
+        data = json.loads(resp.choices[0].message.content)
+        refs = data.get("references", [])
+        # Infer arxiv_id from DOI when possible (arxiv DOIs are 10.48550/arXiv.XXXX.XXXXX)
+        for r in refs:
+            doi = r.get("doi") or ""
+            if "arxiv" in doi.lower():
+                r["arxiv_id"] = doi.split("arXiv.")[-1].split("/")[-1]
+            else:
+                r["arxiv_id"] = None
+        return refs[:60]
+    except Exception as e:
+        logger.warning(f"BIBLIOGRAPHY: Extraction failed — {e}")
+        return []
+
+
+# =============================================================================
+# LITERATURE REVIEW GENERATOR
+# =============================================================================
+
+async def generate_lit_review(openai_client, papers_context: list, question: str):
+    """Streams a structured literature review synthesis across multiple papers.
+    papers_context: list of {label, title, chunks_text} dicts.
+    Yields token strings; caller wraps in SSE."""
+    # Build a labelled context block per paper so the LLM can cite correctly
+    context_blocks = []
+    for p in papers_context:
+        block = f"=== [{p['label']}] {p['title']} ===\n{p['chunks_text']}"
+        context_blocks.append(block)
+    combined = "\n\n".join(context_blocks)
+
+    prompt = (
+        "You are a senior academic writing a literature review.\n"
+        "Use ONLY the provided paper excerpts below. Cite papers using their label like [A], [B], etc.\n"
+        "Structure your response with these sections:\n"
+        "## Overview\n## Key Approaches\n## Similarities\n## Differences\n## Research Gaps\n\n"
+        f"RESEARCH QUESTION: {question}\n\n"
+        f"PAPER EXCERPTS:\n{combined[:12000]}"
+    )
+    response = await openai_client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.3,
+        stream=True
+    )
+    async for chunk in response:
+        if chunk.choices and chunk.choices[0].delta.content:
+            yield chunk.choices[0].delta.content
+
+
+# =============================================================================
+# KNOWLEDGE GRAPH
+# =============================================================================
+
+def compute_graph_edges(papers: list) -> dict:
+    """Builds a knowledge graph from paper metadata alone — no LLM needed.
+    Nodes = papers; edges = shared authors or shared keywords.
+    O(n²) — safe for vaults up to ~150 papers; larger vaults sample the 150 newest."""
+    if len(papers) > 150:
+        papers = papers[:150]  # already sorted newest-first by list_unique_papers
+
+    nodes = []
+    for p in papers:
+        nodes.append({
+            "id": p["filename"],
+            "label": (p.get("title") or p["filename"])[:40],
+            "year": p.get("year"),
+            "authors": p.get("authors") or [],
+            "keywords": p.get("keywords") or [],
+        })
+
+    edges = []
+    seen = set()
+    for i, a in enumerate(nodes):
+        for j, b in enumerate(nodes):
+            if j <= i:
+                continue
+            key = (a["id"], b["id"])
+            if key in seen:
+                continue
+            seen.add(key)
+
+            shared_authors = list(set(a["authors"]) & set(b["authors"]))
+            shared_keywords = list(set(k.lower() for k in a["keywords"]) &
+                                   set(k.lower() for k in b["keywords"]))
+
+            if shared_authors:
+                edges.append({
+                    "source": a["id"], "target": b["id"],
+                    "type": "shared_author",
+                    "weight": len(shared_authors),
+                    "label": ", ".join(shared_authors[:2])
+                })
+            elif shared_keywords:
+                edges.append({
+                    "source": a["id"], "target": b["id"],
+                    "type": "shared_keyword",
+                    "weight": len(shared_keywords),
+                    "label": ", ".join(shared_keywords[:2])
+                })
+
+    return {"nodes": nodes, "edges": edges}
+
 
 async def generate_query_variations(client, query: str) -> List[str]:
     """Step 49: AI-driven query expansion for improved retrieval recall."""

@@ -118,3 +118,16 @@ class QueryResponse(BaseModel):
     faithfulness_score: Optional[float] = None  # Step 46
     faithfulness_reasoning: Optional[str] = None # Step 46
     timestamp: datetime = Field(default_factory=datetime.now)
+
+class CompareRequest(BaseModel):
+    filename_a: str
+    filename_b: str
+    question: str = "What are the key similarities and differences between these papers?"
+
+class NoteCreate(BaseModel):
+    title: str = "Untitled Note"
+    content: str = ""
+
+class NoteUpdate(BaseModel):
+    title: Optional[str] = None
+    content: Optional[str] = None

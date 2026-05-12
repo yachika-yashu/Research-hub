@@ -1,0 +1,13 @@
+# ResearchHub — Caddy reverse proxy with automatic HTTPS
+# Replace yourdomain.com with your actual domain everywhere below.
+# Caddy fetches and renews TLS certificates from Let's Encrypt automatically.
+
+# Dashboard — Streamlit frontend
+app.yourdomain.com {
+    reverse_proxy dashboard:8501
+}
+
+# API — FastAPI backend (exposed so clients can call it directly if needed)
+api.yourdomain.com {
+    reverse_proxy api:8000
+}

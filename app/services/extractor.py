@@ -1,5 +1,7 @@
+import hashlib
 import io
 import os
+import re
 import pytesseract
 from PIL import Image
 from pdf2image import convert_from_bytes
@@ -7,9 +9,9 @@ from typing import Tuple, Dict, Any
 
 from docling.document_converter import DocumentConverter, PdfFormatOption
 from docling.datamodel.pipeline_options import PdfPipelineOptions, TableFormerMode
-from docling.datamodel.base_models import InputFormat, DocItemLabel
+from docling.datamodel.base_models import InputFormat
 
-from app.core.config import TESSERACT_CMD, OCR_THRESHOLD, ASSETS_DIR
+from app.core.config import TESSERACT_CMD, OCR_THRESHOLD, ASSETS_DIR, API_PUBLIC_URL
 from app.schemas.models import PaperMetadata
 from app.core.logging import logger
 
@@ -60,44 +62,58 @@ async def extract_text(file) -> Tuple[str, str, Dict[str, str]]:
 
         result = converter.convert(tmp_path)
         os.unlink(tmp_path)
-        
-        # 1. Export Markdown
-        raw_text = result.document.export_to_markdown()
-        
-        # 2. Visual Intelligence (Docling 2.x Upgrade - Step 54 Fix)
+
         image_map = {}
         os.makedirs(ASSETS_DIR, exist_ok=True)
-        
-        picture_count = 0
-        for item, _level in result.document.iterate_items():
-            if item.label == DocItemLabel.PICTURE:
-                if hasattr(item, "image") and item.image:
-                    try:
-                        element_id = str(picture_count)
-                        img_filename = f"picture_{element_id}.png"
-                        img_path = os.path.join(ASSETS_DIR, img_filename)
-                        
-                        item.image.pil_image.save(img_path)
-                        
-                        element_key = f"picture-{element_id}"
-                        image_map[element_key] = f"/assets/images/{img_filename}"
-                        picture_count += 1
-                    except Exception as e:
-                        print(f"VISUAL: Failed to save picture {picture_count}: {e}")
-                        logger.error(f"VISUAL: Failed to save picture {picture_count}: {e}")
+        doc_hash = hashlib.md5(content).hexdigest()[:10]
 
-        # 3. Enhance Markdown with stable references
-        import re
-        curr_img = 0
-        def img_replacer(match):
-            nonlocal curr_img
-            res = f"<!-- picture-{curr_img} -->"
-            curr_img += 1
-            return res
-        
-        raw_text = re.sub(r"<!-- image -->", img_replacer, raw_text)
+        # 1. Export Markdown with embedded base64 images.
+        #    ImageRefMode.EMBEDDED is the only Docling 2.x API that reliably
+        #    surfaces image data regardless of PictureItem internals.
+        try:
+            from docling_core.types.doc import ImageRefMode
+            raw_text = result.document.export_to_markdown(
+                image_mode=ImageRefMode.EMBEDDED
+            )
+        except Exception:
+            raw_text = result.document.export_to_markdown()
 
-        # Fallback to OCR if text is suspicious
+        # 2. Extract embedded base64 images → save as PNG files → replace with URLs.
+        #    This keeps chunk text lean (no base64 blobs) while making images
+        #    accessible via the static /assets route.
+        import base64 as _b64
+        pic_counter = 0
+
+        def _save_and_link(match):
+            nonlocal pic_counter
+            b64_data = match.group(1).strip()
+            try:
+                img_bytes = _b64.b64decode(b64_data)
+                img_filename = f"{doc_hash}_pic{pic_counter}.png"
+                img_path = os.path.join(ASSETS_DIR, img_filename)
+                with open(img_path, "wb") as fh:
+                    fh.write(img_bytes)
+                rel_path = f"/assets/images/{img_filename}"
+                image_map[f"picture-{pic_counter}"] = rel_path
+                full_url = f"{API_PUBLIC_URL}{rel_path}"
+                logger.info(f"VISUAL: Saved picture-{pic_counter} → {img_filename}")
+            except Exception as exc:
+                logger.error(f"VISUAL: Failed to save picture-{pic_counter}: {exc}")
+                full_url = ""
+            finally:
+                pic_counter += 1
+            return f"\n![Figure]({full_url})\n" if full_url else ""
+
+        # Matches: ![anything](data:image/TYPE;base64,DATA)
+        raw_text = re.sub(
+            r"!\[[^\]]*\]\(data:image/[^;]+;base64,([A-Za-z0-9+/=\s]+)\)",
+            _save_and_link,
+            raw_text,
+        )
+
+        logger.info(f"VISUAL: Extracted {pic_counter} picture(s) from {doc_hash}")
+
+        # 3. Fallback to OCR if text is too short
         if len(raw_text.strip()) < OCR_THRESHOLD:
             logger.warning("EXTRACTION: Docling result too short. Triggering OCR Fallback...")
             raw_text = await ocr_extract(content)

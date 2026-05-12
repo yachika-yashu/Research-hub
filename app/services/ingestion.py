@@ -8,11 +8,16 @@ from sqlalchemy.orm import Session
 
 from app.services.extractor import extract_text
 from app.services.vector_store import get_qdrant, get_sparse_encoder, search_vdb, QDRANT_COLLECTION, VECTOR_NAME_DENSE, VECTOR_NAME_SPARSE
-from app.core.logic import clean_text, chunk_document, extract_paper_metadata, embed_chunks, estimate_cost
-from app.core.database import User, UsageLog, get_db
+from app.core.logic import (
+    clean_text, chunk_document, extract_paper_metadata, embed_chunks,
+    estimate_cost, generate_paper_summary,
+    extract_structured_fields, extract_bibliography,
+    generate_bibtex_key, build_bibtex_entry,
+)
+from app.core.database import User, UsageLog, PaperSummary, PaperDetails, PaperReference, get_db
 from app.core.config import EMBEDDING_MODEL
 from app.core.globals import openai_client
-from app.core.cache import invalidate_exact_cache_for_tenant
+from app.core.cache import invalidate_exact_cache_for_tenant, invalidate_semantic_cache_for_tenant
 from qdrant_client.http import models as rest
 
 async def process_ingestion(
@@ -82,7 +87,7 @@ async def stream_process_ingestion(
     s_vectors = list(s_encoder.embed([c.text for c in embedded]))
     
     # Stage 8: Vector Persistence
-    yield {"type": "progress", "value": 90, "message": "Indexing into Qdrant vault..."}
+    yield {"type": "progress", "value": 88, "message": "Indexing into Qdrant vault..."}
     qdrant = get_qdrant()
     points = []
     for c, s_vec in zip(embedded, s_vectors):
@@ -98,14 +103,93 @@ async def stream_process_ingestion(
             },
             payload=c.to_dict()
         ))
-    
+
     qdrant.upsert(collection_name=QDRANT_COLLECTION, points=points)
 
     # Any new ingestion can change retrieval answers, so invalidate the fast exact
     # cache for this tenant before we report completion back to the client.
     await invalidate_exact_cache_for_tenant(tenant_id)
-    
-    # Stage 9: Usage Logging
+    await invalidate_semantic_cache_for_tenant(tenant_id)
+
+    # Stage 9: Auto-summary + paper_details upsert
+    yield {"type": "progress", "value": 92, "message": "Generating paper summary..."}
+    summary_text = await generate_paper_summary(openai_client, raw_text, paper_meta.title or filename)
+    if summary_text:
+        db.query(PaperSummary).filter(
+            PaperSummary.tenant_id == tenant_id,
+            PaperSummary.filename == filename
+        ).delete()
+        db.add(PaperSummary(tenant_id=tenant_id, filename=filename, summary=summary_text))
+        db.flush()
+
+    # Stage 9a: Structured extraction (contribution / dataset / baselines / limitations)
+    # Runs as a separate LLM call so a failure here never breaks the main ingest.
+    yield {"type": "progress", "value": 94, "message": "Extracting structured research fields..."}
+    structured = {}
+    refs_data = []
+    try:
+        structured = await extract_structured_fields(openai_client, raw_text)
+        refs_data  = await extract_bibliography(openai_client, raw_text)
+    except Exception as e:
+        pass
+
+    # Upsert paper_details row (canonical per-paper record used by BibTeX, graph, etc.)
+    import json as _json
+    bibtex_key = generate_bibtex_key(
+        paper_meta.authors, paper_meta.year, paper_meta.title or filename
+    )
+    # Ensure key is unique within tenant
+    existing_keys = {
+        row.bibtex_key
+        for row in db.query(PaperDetails.bibtex_key)
+            .filter(PaperDetails.tenant_id == tenant_id)
+            .all()
+    }
+    base_key = bibtex_key
+    suffix = ord('a')
+    while bibtex_key in existing_keys:
+        bibtex_key = f"{base_key}{chr(suffix)}"
+        suffix += 1
+
+    db.query(PaperDetails).filter(
+        PaperDetails.tenant_id == tenant_id,
+        PaperDetails.filename == filename
+    ).delete()
+    db.add(PaperDetails(
+        tenant_id=tenant_id,
+        filename=filename,
+        title=paper_meta.title,
+        authors=_json.dumps(paper_meta.authors),
+        year=paper_meta.year,
+        doi=paper_meta.doi,
+        journal=paper_meta.journal,
+        keywords=_json.dumps(paper_meta.keywords),
+        bibtex_key=bibtex_key,
+        contribution=structured.get("contribution"),
+        dataset=structured.get("dataset"),
+        baselines=_json.dumps(structured.get("baselines") or []),
+        limitations=structured.get("limitations"),
+    ))
+
+    # Stage 9b: Save extracted bibliography references
+    if refs_data:
+        db.query(PaperReference).filter(
+            PaperReference.tenant_id == tenant_id,
+            PaperReference.source_filename == filename
+        ).delete()
+        for ref in refs_data:
+            db.add(PaperReference(
+                tenant_id=tenant_id,
+                source_filename=filename,
+                ref_title=ref.get("title", ""),
+                ref_authors=_json.dumps(ref.get("authors") or []),
+                ref_year=ref.get("year"),
+                ref_doi=ref.get("doi"),
+                arxiv_id=ref.get("arxiv_id"),
+            ))
+    db.flush()
+
+    # Stage 10: Usage Logging
     total_tokens = sum(c.token_count for c in embedded)
     cost = estimate_cost(total_tokens, 0, EMBEDDING_MODEL)
     

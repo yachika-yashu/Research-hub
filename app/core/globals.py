@@ -1,5 +1,5 @@
 import os
-from openai import #This creates a client that uses async/await instead of blocking calls.
+from openai import AsyncOpenAI  # async client prevents OpenAI calls from blocking the event loop
 from dotenv import load_dotenv
 
 load_dotenv()

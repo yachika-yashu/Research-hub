@@ -83,9 +83,15 @@ async def search_vdb(
     limit: int = 5,
     filters: Optional[QueryFilters] = None
 ) -> List[dict]:
-    """Hybrid Search (Dense + Sparse) + Precision Reranking + Logical Filtering."""
-    
-    # 0. Construct Filters (RELAXED for Step 45 compatibility)
+    """
+    Hybrid retrieval: combines dense (OpenAI embeddings) + sparse (BM25) search
+    via Qdrant's RRF (Reciprocal Rank Fusion) to get the best of both worlds —
+    dense for semantic similarity, sparse for exact keyword matching.
+    Falls back to dense-only if hybrid fails (e.g. sparse index is empty on a
+    fresh collection), so retrieval always returns something useful.
+    tenant_id is always the first filter so no tenant ever sees another's data.
+    """
+    # tenant_id is mandatory — it's the multi-tenancy isolation boundary
     filter_conditions = [rest.FieldCondition(key="tenant_id", match=rest.MatchValue(value=tenant_id))]
     
     if filters:
@@ -147,19 +153,26 @@ async def search_vdb(
         print(f"QDRANT: Hybrid Query Failed: {e}. Falling back...")
         results = []
 
-    # 4. Resilient Fallback (Step 46 refinement)
-    # If Hybrid (Dense + Sparse) returns nothing, the Sparse stream might be empty/noisy.
-    # We fallback to pure Semantic (Dense) search to ensure high recall.
+    # Dense-only fallback: hybrid fusion fails on fresh collections where the
+    # sparse (BM25) index has no documents yet, or when the Qdrant server
+    # version doesn't fully support the prefetch/fusion API.
+    # query_filter= (not filter=) is the correct param name for query_points()
+    # in Qdrant client ≥1.12 — using filter= here caused AssertionError silently
+    # swallowed by the rag_tool, making the LLM hallucinate "refer to the paper".
     if not results:
         print("QDRANT: Hybrid Fusion returned zero results. Retrying with Semantic Fallback (Dense-only)...")
-        results = client.query_points(
-            collection_name=QDRANT_COLLECTION,
-            query=dense_vector,
-            using=VECTOR_NAME_DENSE,
-            filter=qdrant_filter,
-            limit=limit,
-            with_payload=True
-        ).points
+        try:
+            results = client.query_points(
+                collection_name=QDRANT_COLLECTION,
+                query=dense_vector,
+                using=VECTOR_NAME_DENSE,
+                query_filter=qdrant_filter,
+                limit=limit,
+                with_payload=True
+            ).points
+        except Exception as e:
+            print(f"QDRANT: Dense-only fallback also failed: {e}")
+            results = []
 
     if not results: 
         print("QDRANT: All retrieval attempts failed (Zero matches found).")
@@ -211,6 +224,11 @@ async def list_unique_papers(tenant_id: str) -> List[dict]:
             unique_papers[filename] = {
                 "filename": filename,
                 "title": meta.get("title", "Unknown"),
+                "authors": meta.get("authors", []),
+                "year": meta.get("year"),
+                "doi": meta.get("doi"),
+                "journal": meta.get("journal"),
+                "keywords": meta.get("keywords", []),
                 "ingested_at": ingested_at
             }
     
