@@ -28,7 +28,7 @@ QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 API_PUBLIC_URL = os.getenv("API_PUBLIC_URL", "http://localhost:8000") #used to get the URL of the qdrant vector database.if the environment variable exists (in docker-composefile or when deployed), use it; otherwise, default to localhost:6333 (Qdrant is a vector database used to store and search for vectors)
 QDRANT_COLLECTION = "research_platform"
 
-# Named Vectors for Hybrid Search 
+# Named Vectors for Hybrid Search
 VECTOR_NAME_DENSE = "dense-text"
 VECTOR_NAME_SPARSE = "sparse-text"
 
@@ -70,14 +70,14 @@ ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440
 # Local development stays convenient, but production must explicitly list origins.
 ALLOWED_ORIGINS = _parse_csv_env(
     "ALLOWED_ORIGINS",
-    "http://localhost:8501,http://127.0.0.1:8501,http://localhost:8000,http://127.0.0.1:8000",# used in main.py, update in production 
+    "http://localhost:8501,http://127.0.0.1:8501,http://localhost:8000,http://127.0.0.1:8000",# used in main.py, update in production
 )
 TRUSTED_HOSTS = _parse_csv_env("TRUSTED_HOSTS", "localhost,127.0.0.1") # used in main.py, update in production
 ENABLE_DOCS = os.getenv("ENABLE_DOCS", "true").strip().lower() == "true" # used in main.py, update in production
 GOOGLE_OAUTH_ALLOW_INSECURE_HTTP = os.getenv(
     "GOOGLE_OAUTH_ALLOW_INSECURE_HTTP",
     "false" if IS_PRODUCTION else "true",
-).strip().lower() == "true" 
+).strip().lower() == "true"
 
 # =============================================================================
 # AI MODEL SETTINGS
@@ -94,7 +94,7 @@ ENABLE_RERANKING = True
 RERANKER_MODEL = "BAAI/bge-reranker-base"  # High-precision Cross-Encoder
 RERANK_TOP_K = 25  # Candidates to consider for reranking
 
-#This function is a startup security guardrail. Its purpose is to prevent the application from running if critical security configurations are unsafe, especially in production environments. It enforces safe defaults by validating key settings at startup and failing fast if misconfigurations are detected. This helps prevent security issues such as weak secret keys, overly permissive CORS settings, or insecure OAuth configurations from reaching a live system. By stopping the application during startup, it ensures that insecure defaults cannot silently reach production or expose the system to potential vulnerabilities.  
+#This function is a startup security guardrail. Its purpose is to prevent the application from running if critical security configurations are unsafe, especially in production environments. It enforces safe defaults by validating key settings at startup and failing fast if misconfigurations are detected. This helps prevent security issues such as weak secret keys, overly permissive CORS settings, or insecure OAuth configurations from reaching a live system. By stopping the application during startup, it ensures that insecure defaults cannot silently reach production or expose the system to potential vulnerabilities.
 def validate_security_config() -> None: # used in main.py, update in production
     """
     Fail fast on insecure production settings. If configuration is unsafe, crash immediately at startup instead of running insecurely.

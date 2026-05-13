@@ -1,10 +1,9 @@
 import uuid
 import json
-import asyncio
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Request, Depends, BackgroundTasks
+from fastapi import APIRouter, HTTPException, UploadFile, File, Request, Depends, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -15,10 +14,9 @@ from qdrant_client.http import models as rest
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
 
 from app.schemas.models import (
-    IngestResponse, QueryRequest, QueryResponse, Citation,
-    CompareRequest, QueryFilters, NoteCreate, NoteUpdate
+    QueryRequest, CompareRequest, QueryFilters, NoteCreate, NoteUpdate
 )
-from app.services.ingestion import process_ingestion, download_and_ingest_arxiv
+from app.services.ingestion import download_and_ingest_arxiv
 from app.services.vector_store import get_qdrant, search_vdb, list_unique_papers, QDRANT_COLLECTION
 from app.core.auth import get_current_user
 # Import all DB models and helpers in one place to avoid scattered mid-file imports
@@ -34,7 +32,7 @@ from app.core.cache import (
     invalidate_exact_cache_for_tenant,
 )
 from app.core.logic import (
-    verify_faithfulness, estimate_cost, count_tokens,
+    estimate_cost, count_tokens,
     build_bibtex_entry, generate_bibtex_key, compute_graph_edges,
     generate_lit_review,
 )
@@ -971,7 +969,9 @@ async def add_to_queue(
         notes=body.get("notes", ""),
         status="queued",
     )
-    db.add(item); db.commit(); db.refresh(item)
+    db.add(item)
+    db.commit()
+    db.refresh(item)
     return _queue_to_dict(item)
 
 
@@ -988,9 +988,12 @@ async def update_queue_item(
     ).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found.")
-    if "status" in body: item.status = body["status"]
-    if "notes"  in body: item.notes  = body["notes"]
-    db.commit(); db.refresh(item)
+    if "status" in body:
+        item.status = body["status"]
+    if "notes" in body:
+        item.notes = body["notes"]
+    db.commit()
+    db.refresh(item)
     return _queue_to_dict(item)
 
 
@@ -1006,7 +1009,8 @@ async def delete_queue_item(
     ).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found.")
-    db.delete(item); db.commit()
+    db.delete(item)
+    db.commit()
     return {"status": "deleted", "id": item_id}
 
 
@@ -1023,7 +1027,7 @@ async def list_monitors(
     monitors = db.query(ArxivMonitor).filter(
         ArxivMonitor.tenant_id == current_user.tenant_id,
         ArxivMonitor.user_id == current_user.id,
-        ArxivMonitor.is_active == True
+        ArxivMonitor.is_active.is_(True)
     ).all()
     return {"monitors": [{"id": m.id, "keywords": m.keywords,
                           "last_checked_at": m.last_checked_at.isoformat() if m.last_checked_at else None}
@@ -1044,7 +1048,9 @@ async def create_monitor(
         user_id=current_user.id,
         keywords=kw,
     )
-    db.add(m); db.commit(); db.refresh(m)
+    db.add(m)
+    db.commit()
+    db.refresh(m)
     return {"id": m.id, "keywords": m.keywords}
 
 
@@ -1073,7 +1079,7 @@ async def list_alerts(
     import json as _json
     alerts = db.query(ArxivAlert).filter(
         ArxivAlert.tenant_id == current_user.tenant_id,
-        ArxivAlert.is_read == False
+        ArxivAlert.is_read.is_(False)
     ).order_by(ArxivAlert.created_at.desc()).limit(50).all()
     return {"alerts": [
         {"id": a.id, "arxiv_id": a.arxiv_id, "title": a.title,

@@ -1,12 +1,8 @@
-import os
-import asyncio
-import httpx
-from typing import List, Optional, Dict, Any
+from typing import Optional
 from langchain_core.tools import tool
 from langchain_community.utilities import ArxivAPIWrapper
 from langchain_experimental.utilities import PythonREPL
 from app.services.vector_store import search_vdb
-from app.core.globals import openai_client
 from app.core.config import API_PUBLIC_URL
 
 # Initialize utilities
@@ -16,7 +12,7 @@ python_repl = PythonREPL()
 @tool
 def arxiv_search_tool(query: str) -> str:
     """
-    Search Arxiv for research papers. 
+    Search Arxiv for research papers.
     Use this to find papers by title, author, or topic when the local vault doesn't have the answer.
     Returns paper summaries, titles, and IDs.
     """
@@ -25,8 +21,8 @@ def arxiv_search_tool(query: str) -> str:
 @tool
 def python_repl_tool(code: str) -> str:
     """
-    A Python shell. Use this to execute python commands. 
-    The input should be a valid python command. 
+    A Python shell. Use this to execute python commands.
+    The input should be a valid python command.
     Useful for data analysis, complex math, or generating plots (though plots won't be visible, data will).
     """
     return python_repl.run(code)
@@ -121,13 +117,13 @@ async def auto_ingest_paper_tool(arxiv_id: str, tenant_id: str) -> str:
     """
     from app.services.ingestion import download_and_ingest_arxiv
     from app.core.database import SessionLocal, User
-    
+
     db = SessionLocal()
     try:
         user = db.query(User).filter(User.tenant_id == tenant_id).first()
         if not user:
             return f"Error: No user found for tenant {tenant_id}"
-        
+
         result = await download_and_ingest_arxiv(arxiv_id, user, db)
         return result
     finally:
@@ -144,7 +140,7 @@ async def list_vault_papers_tool(tenant_id: str) -> str:
     papers = await list_unique_papers(tenant_id)
     if not papers:
         return "The research vault is currently empty."
-    
+
     output = "--- RESEARCH VAULT CATALOG ---\n"
     for p in papers:
         output += f"- {p['filename']} (Title: {p['title']}) | Uploaded: {p['ingested_at']}\n"

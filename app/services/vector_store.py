@@ -37,7 +37,7 @@ async def init_db():
     """Initializes high-performance storage and semantic indexes."""
     client = get_qdrant()
     collections = client.get_collections().collections
-    
+
     exists = False
     is_hybrid = False
     for c in collections:
@@ -63,7 +63,7 @@ async def init_db():
                 VECTOR_NAME_SPARSE: rest.SparseVectorParams()
             }
         )
-        
+
         # Metadata Indexes (Step 25)
         print("QDRANT: Creating Metadata Indexes...")
         client.create_payload_index(QDRANT_COLLECTION, "tenant_id", rest.PayloadSchemaType.KEYWORD)
@@ -72,7 +72,7 @@ async def init_db():
         client.create_payload_index(QDRANT_COLLECTION, "metadata.journal", rest.PayloadSchemaType.KEYWORD)
         client.create_payload_index(QDRANT_COLLECTION, "chunk_type", rest.PayloadSchemaType.KEYWORD)
         client.create_payload_index(QDRANT_COLLECTION, "metadata.ingested_at", rest.PayloadSchemaType.KEYWORD)
-        
+
         print(f"Qdrant collection '{QDRANT_COLLECTION}' initialized with Hybrid + Metadata support.")
     else:
         print(f"Qdrant collection '{QDRANT_COLLECTION}' already exists.")
@@ -93,21 +93,21 @@ async def search_vdb(
     """
     # tenant_id is mandatory — it's the multi-tenancy isolation boundary
     filter_conditions = [rest.FieldCondition(key="tenant_id", match=rest.MatchValue(value=tenant_id))]
-    
+
     if filters:
         # Years: only apply if they are not the extremely broad defaults (1990/2025)
         # We also allow points with null years to be included by default in these range searches
         if filters.year_min and filters.year_min > 1990:
             filter_conditions.append(rest.FieldCondition(
-                key="metadata.year", 
+                key="metadata.year",
                 range=rest.Range(gte=filters.year_min)
             ))
         if filters.year_max and filters.year_max < 2025:
             filter_conditions.append(rest.FieldCondition(
-                key="metadata.year", 
+                key="metadata.year",
                 range=rest.Range(lte=filters.year_max)
             ))
-        
+
         if filters.authors:
             for author in filters.authors:
                 filter_conditions.append(rest.FieldCondition(key="metadata.authors", match=rest.MatchValue(value=author)))
@@ -125,11 +125,11 @@ async def search_vdb(
     from app.core.config import EMBEDDING_MODEL
     dense_resp = await openai_client.embeddings.create(input=[query], model=EMBEDDING_MODEL, dimensions=EMBEDDING_DIMENSIONS)
     dense_vector = dense_resp.data[0].embedding
-    
+
     # 2. Sparse Embedding
     s_encoder = get_sparse_encoder()
     sparse_vector = list(s_encoder.query_embed(query))[0]
-    
+
     client = get_qdrant()
     retrieval_limit = RERANK_TOP_K if ENABLE_RERANKING else limit
 
@@ -174,7 +174,7 @@ async def search_vdb(
             print(f"QDRANT: Dense-only fallback also failed: {e}")
             results = []
 
-    if not results: 
+    if not results:
         print("QDRANT: All retrieval attempts failed (Zero matches found).")
         return []
 
@@ -188,7 +188,7 @@ async def search_vdb(
         rerank_scores = list(reranker.rerank(query, passages))
         for idx, score in enumerate(rerank_scores):
             initial_hits[idx]["precision_score"] = round(float(score), 4)
-        
+
         # Sort by precision
         initial_hits = sorted(initial_hits, key=lambda x: x.get("precision_score", 0), reverse=True)
 
@@ -197,7 +197,7 @@ async def search_vdb(
 async def list_unique_papers(tenant_id: str) -> List[dict]:
     """Returns a list of unique papers in the user's vault, sorted by most recent."""
     client = get_qdrant()
-    
+
     # Scroll through all points for this tenant to find unique filenames
     # Since we only need metadata, we disable vectors to save bandwidth
     results, _ = client.scroll(
@@ -209,16 +209,16 @@ async def list_unique_papers(tenant_id: str) -> List[dict]:
         with_payload=True,
         with_vectors=False
     )
-    
+
     unique_papers = {}
     for point in results:
         meta = point.payload.get("metadata", {})
         filename = meta.get("filename")
         if not filename:
             continue
-            
+
         ingested_at = meta.get("ingested_at", "Legacy/Prior to Update")
-        
+
         # Keep the most recent record for each filename
         if filename not in unique_papers or ingested_at > unique_papers[filename]["ingested_at"]:
             unique_papers[filename] = {
@@ -231,7 +231,7 @@ async def list_unique_papers(tenant_id: str) -> List[dict]:
                 "keywords": meta.get("keywords", []),
                 "ingested_at": ingested_at
             }
-    
+
     # Convert to list and sort by ingested_at descending
     papers = sorted(unique_papers.values(), key=lambda x: x["ingested_at"], reverse=True)
     return papers

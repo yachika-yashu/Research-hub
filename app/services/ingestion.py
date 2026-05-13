@@ -1,29 +1,27 @@
 import uuid
-import json
 import httpx
-import os
-from typing import Optional, Dict, Any, List
+from typing import Dict, Any
 from datetime import datetime
 from sqlalchemy.orm import Session
 
 from app.services.extractor import extract_text
-from app.services.vector_store import get_qdrant, get_sparse_encoder, search_vdb, QDRANT_COLLECTION, VECTOR_NAME_DENSE, VECTOR_NAME_SPARSE
+from app.services.vector_store import get_qdrant, get_sparse_encoder, QDRANT_COLLECTION, VECTOR_NAME_DENSE, VECTOR_NAME_SPARSE
 from app.core.logic import (
     clean_text, chunk_document, extract_paper_metadata, embed_chunks,
     estimate_cost, generate_paper_summary,
     extract_structured_fields, extract_bibliography,
-    generate_bibtex_key, build_bibtex_entry,
+    generate_bibtex_key,
 )
-from app.core.database import User, UsageLog, PaperSummary, PaperDetails, PaperReference, get_db
+from app.core.database import User, UsageLog, PaperSummary, PaperDetails, PaperReference
 from app.core.config import EMBEDDING_MODEL
 from app.core.globals import openai_client
 from app.core.cache import invalidate_exact_cache_for_tenant, invalidate_semantic_cache_for_tenant
 from qdrant_client.http import models as rest
 
 async def process_ingestion(
-    file_content: bytes, 
-    filename: str, 
-    user: User, 
+    file_content: bytes,
+    filename: str,
+    user: User,
     db: Session
 ) -> Dict[str, Any]:
     """Legacy wrapper for tool compatibility."""
@@ -33,9 +31,9 @@ async def process_ingestion(
     return {}
 
 async def stream_process_ingestion(
-    file_content: bytes, 
-    filename: str, 
-    user: User, 
+    file_content: bytes,
+    filename: str,
+    user: User,
     db: Session
 ):
     """
@@ -43,31 +41,30 @@ async def stream_process_ingestion(
     Yields: {"type": "progress", "value": int, "message": str}
     """
     tenant_id = user.tenant_id
-    
+
     # Stage 1: Extraction
     yield {"type": "progress", "value": 10, "message": f"Extracting text from {filename}..."}
-    from io import BytesIO
     class MockFile:
         def __init__(self, content, name):
             self._content = content
             self.filename = name
         async def read(self):
             return self._content
-    
+
     mock_file = MockFile(file_content, filename)
     raw_text, method, image_map = await extract_text(mock_file)
-    
+
     # Stage 2: Semantic Metadata
     yield {"type": "progress", "value": 25, "message": "Analyzing paper metadata..."}
     paper_meta = await extract_paper_metadata(openai_client, raw_text)
-    
+
     # Stage 3: Cleaning
     yield {"type": "progress", "value": 35, "message": "Cleaning and normalizing text..."}
     cleaned_text, clean_meta = clean_text(raw_text)
-    
+
     # Stage 4: Unique doc_id
     doc_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{tenant_id}_{filename}"))
-    
+
     # Stage 5: Chunking & Linking
     yield {"type": "progress", "value": 45, "message": "Chunking document and linking visuals..."}
     chunks, chunk_stats = chunk_document(cleaned_text, doc_id, tenant_id, image_map)
@@ -76,16 +73,16 @@ async def stream_process_ingestion(
         c.metadata["filename"] = filename
         c.metadata["ingested_at"] = ingested_at
         c.metadata.update(paper_meta.model_dump())
-        
+
     # Stage 6: Dense Embedding
     yield {"type": "progress", "value": 60, "message": f"Generating dense embeddings for {len(chunks)} chunks..."}
     embedded = await embed_chunks(openai_client, chunks)
-    
+
     # Stage 7: Sparse Encoding
     yield {"type": "progress", "value": 80, "message": "Generating sparse vectors (BM25)..."}
     s_encoder = get_sparse_encoder()
     s_vectors = list(s_encoder.embed([c.text for c in embedded]))
-    
+
     # Stage 8: Vector Persistence
     yield {"type": "progress", "value": 88, "message": "Indexing into Qdrant vault..."}
     qdrant = get_qdrant()
@@ -129,8 +126,8 @@ async def stream_process_ingestion(
     refs_data = []
     try:
         structured = await extract_structured_fields(openai_client, raw_text)
-        refs_data  = await extract_bibliography(openai_client, raw_text)
-    except Exception as e:
+        refs_data = await extract_bibliography(openai_client, raw_text)
+    except Exception:
         pass
 
     # Upsert paper_details row (canonical per-paper record used by BibTeX, graph, etc.)
@@ -192,7 +189,7 @@ async def stream_process_ingestion(
     # Stage 10: Usage Logging
     total_tokens = sum(c.token_count for c in embedded)
     cost = estimate_cost(total_tokens, 0, EMBEDDING_MODEL)
-    
+
     usage = UsageLog(
         tenant_id=tenant_id, user_id=user.id,
         event_type="ingest", model_name=EMBEDDING_MODEL,
@@ -200,7 +197,7 @@ async def stream_process_ingestion(
     )
     db.add(usage)
     db.commit()
-    
+
     result = {
         "filename": filename,
         "status": "success",
@@ -213,8 +210,8 @@ async def stream_process_ingestion(
     yield {"type": "completed", "result": result}
 
 async def download_and_ingest_arxiv(
-    arxiv_id: str, 
-    user: User, 
+    arxiv_id: str,
+    user: User,
     db: Session
 ) -> str:
     """Downloads a PDF from Arxiv and ingests it."""
@@ -223,10 +220,10 @@ async def download_and_ingest_arxiv(
         response = await client.get(url, follow_redirects=True)
         if response.status_code != 200:
             return f"Failed to download paper from Arxiv (Status: {response.status_code})"
-        
+
         file_content = response.content
         filename = f"arxiv_{arxiv_id}.pdf"
-        
+
         try:
             result = await process_ingestion(file_content, filename, user, db)
             return f"Successfully ingested paper '{arxiv_id}': {result['metadata'].title}"

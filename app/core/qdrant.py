@@ -1,4 +1,3 @@
-import os
 from typing import Optional
 from qdrant_client import QdrantClient #qdrant is a vector database used to store and search for vectors. It stores vectors in a way that allows for fast similarity searches..QdrantClient() = a way to connect to the qdrant vector database.
 from app.core.config import QDRANT_URL #used to get the URL of the qdrant vector database.

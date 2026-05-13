@@ -1,18 +1,15 @@
 import hashlib
-import io
 import os
 import re
 import pytesseract
-from PIL import Image
 from pdf2image import convert_from_bytes
-from typing import Tuple, Dict, Any
+from typing import Tuple, Dict
 
 from docling.document_converter import DocumentConverter, PdfFormatOption
 from docling.datamodel.pipeline_options import PdfPipelineOptions, TableFormerMode
 from docling.datamodel.base_models import InputFormat
 
 from app.core.config import TESSERACT_CMD, OCR_THRESHOLD, ASSETS_DIR, API_PUBLIC_URL
-from app.schemas.models import PaperMetadata
 from app.core.logging import logger
 
 # Configure Tesseract
@@ -33,11 +30,11 @@ def get_docling_converter() -> DocumentConverter:
     options.do_ocr = True
     options.do_table_structure = True
     options.table_structure_options.mode = TableFormerMode.ACCURATE
-    
+
     # Enable Visual Extraction (Step 2)
     options.generate_picture_images = True
     options.generate_table_images = True
-    
+
     return DocumentConverter(
         allowed_formats=[InputFormat.PDF],
         format_options={
@@ -52,7 +49,7 @@ async def extract_text(file) -> Tuple[str, str, Dict[str, str]]:
     """
     content = await file.read()
     converter = get_docling_converter()
-    
+
     try:
         # Save temp file for Docling
         import tempfile

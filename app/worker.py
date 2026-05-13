@@ -1,5 +1,5 @@
 import os
-from arq import create_pool, cron
+from arq import cron
 from arq.connections import RedisSettings
 from dotenv import load_dotenv
 
@@ -18,7 +18,7 @@ if "://" in REDIS_URL:
         port = int(host_port[1]) if len(host_port) > 1 else 6379
         db = int(parts[1]) if len(parts) > 1 else 0
         redis_settings = RedisSettings(host=host, port=port, database=db)
-    except:
+    except Exception:
         redis_settings = RedisSettings(host="localhost", port=6379, database=0)
 else:
     redis_settings = RedisSettings(host="localhost", port=6379, database=0)
@@ -27,14 +27,13 @@ async def startup(ctx):
     """
     Initialize worker dependencies: Database connection, vector store, etc.
     """
-    import asyncio
     from app.services.vector_store import init_db
     from app.core.database import init_db as init_user_db
     import redis.asyncio as redis
-    
+
     await init_db()
     init_user_db()
-    
+
     # Create an async redis client for publishing progress updates
     ctx["redis"] = redis.from_url(REDIS_URL, decode_responses=True)
 
@@ -50,10 +49,10 @@ async def process_ingestion_task(ctx, file_content: bytes, filename: str, user_i
     import json
     from app.core.database import get_db, User
     from app.services.ingestion import stream_process_ingestion
-    
+
     redis_client = ctx["redis"]
     channel = f"ingest:{job_id}"
-    
+
     # Retrieve user from DB
     db = next(get_db())
     try:
@@ -61,10 +60,10 @@ async def process_ingestion_task(ctx, file_content: bytes, filename: str, user_i
         if not user:
             await redis_client.publish(channel, json.dumps({"type": "error", "message": "User not found"}))
             return
-            
+
         async for event in stream_process_ingestion(file_content, filename, user, db):
             await redis_client.publish(channel, json.dumps(event))
-            
+
     except Exception as e:
         import traceback
         await redis_client.publish(channel, json.dumps({"type": "error", "message": f"{type(e).__name__}: {e}\n{traceback.format_exc()}"}))
@@ -87,7 +86,7 @@ async def check_arxiv_monitors_task(ctx):
 
     db = SessionLocal()
     try:
-        monitors = db.query(ArxivMonitor).filter(ArxivMonitor.is_active == True).all()
+        monitors = db.query(ArxivMonitor).filter(ArxivMonitor.is_active.is_(True)).all()
         client = arxiv.Client()
 
         for monitor in monitors:

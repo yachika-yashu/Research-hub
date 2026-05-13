@@ -37,11 +37,11 @@ class User(Base):
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     username = Column(String, unique=True, index=True, nullable=False)
     hashed_password = Column(String, nullable=False)
-    
+
     # Team-based Multi-Tenancy (Step 45)
     team_code = Column(String, index=True, nullable=False)
     tenant_id = Column(String, index=True, nullable=False) # Derived from team_code
-    
+
     created_at = Column(DateTime, default=datetime.utcnow)
 
 class UsageLog(Base):
@@ -51,14 +51,14 @@ class UsageLog(Base):
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     tenant_id = Column(String, index=True, nullable=False)
     user_id = Column(String, ForeignKey("users.id"))
-    
+
     event_type = Column(String, index=True) # "ingest" | "query"
     model_name = Column(String)
-    
+
     tokens_input = Column(Integer, default=0)
     tokens_output = Column(Integer, default=0)
     estimated_cost_usd = Column(Float, default=0.0)
-    
+
     metrics_json = Column(Text) # JSON string for faithfulness, latency, etc.
     timestamp = Column(DateTime, default=datetime.utcnow)
 
@@ -69,7 +69,7 @@ class TraceLog(Base):
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     usage_log_id = Column(String, ForeignKey("usage_logs.id"), index=True)
     tenant_id = Column(String, index=True)
-    
+
     full_prompt = Column(Text)
     context_data_json = Column(Text)
     faithfulness_report_json = Column(Text)

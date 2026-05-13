@@ -1,14 +1,12 @@
 import re
 import unicodedata
-import uuid
 import json
-from typing import List, Tuple, Dict, Any, Optional
+from typing import List, Tuple, Dict
 from collections import Counter
-from datetime import datetime
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from app.core.config import (
-    REPEATED_LINE_THRESHOLD, MIN_HEADER_LINE_LENGTH, CHUNK_SIZE, CHUNK_OVERLAP,
+    MIN_HEADER_LINE_LENGTH, CHUNK_SIZE, CHUNK_OVERLAP,
     GENERATION_MODEL, EMBEDDING_MODEL, EMBEDDING_DIMENSIONS, TOKEN_ENCODER
 )
 from app.schemas.models import DocumentChunk, CleaningMetadata, ChunkingStats, PaperMetadata
@@ -18,14 +16,14 @@ def clean_text(text: str) -> Tuple[str, CleaningMetadata]:
     """Production cleaning pipeline with normalization and de-noising."""
     stats = {"lig": 0, "hyp": 0, "rep": 0, "ctl": 0}
     original_len = len(text)
-    
+
     # 1. Unicode Normalization (Step 6)
     text = unicodedata.normalize('NFKC', text)
-    
+
     # 2. Control Character Removal
     clean_text = "".join(ch for ch in text if unicodedata.category(ch)[0] != "C" or ch in "\n\t")
     stats["ctl"] = len(text) - len(clean_text)
-    
+
     # 3. Ligature Correction
     ligatures = {"ﬁ": "fi", "ﬂ": "fl", "ﬀ": "ff", "ﬃ": "ffi", "ﬄ": "ffl"}
     for lig, replacement in ligatures.items():
@@ -33,10 +31,10 @@ def clean_text(text: str) -> Tuple[str, CleaningMetadata]:
         if count > 0:
             clean_text = clean_text.replace(lig, replacement)
             stats["lig"] += count
-            
+
     # 4. De-hyphenation (Step 6)
     clean_text = re.sub(r'(\w+)-\n(\w+)', r'\1\2', clean_text)
-    
+
     # 5. Repeated Line Removal (Noise Filtering)
     lines = clean_text.split("\n")
     line_counts = Counter(lines)
@@ -46,9 +44,9 @@ def clean_text(text: str) -> Tuple[str, CleaningMetadata]:
             stats["rep"] += 1
             continue
         filtered_lines.append(line)
-    
+
     final_text = "\n".join(filtered_lines)
-    
+
     meta = CleaningMetadata(
         original_char_count=original_len,
         cleaned_char_count=len(final_text),
@@ -68,31 +66,31 @@ def chunk_document(text: str, doc_id: str, tenant_id: str, image_map: Dict[str, 
         length_function=len,
         add_start_index=True
     )
-    
+
     raw_chunks = splitter.create_documents([text])
     chunks = []
-    
+
     # Track stats
     stats = {"text": 0, "table": 0, "figure": 0, "tokens": 0}
-    
+
     for i, rc in enumerate(raw_chunks):
         c_id = f"{doc_id}_{i}"
-        
+
         # Link Visual Assets (Docling 2.x Upgrade - Phase 15)
         # Docling 2.x markers are usually <!-- picture-1 --> or <!-- table-1 -->
         element_match = re.search(r"<!-- (picture|table|item)-(\d+) -->", rc.page_content)
         media_url = None
         c_type = "text"
-        
+
         if element_match:
             # Reconstruct the ID as used in the image_map (e.g., picture-1)
             element_key = f"{element_match.group(1)}-{element_match.group(2)}"
             media_url = image_map.get(element_key)
             if media_url:
                 c_type = "figure" if "picture" in element_key.lower() else "table"
-        
+
         stats[c_type] += 1
-        
+
         chunk = DocumentChunk(
             chunk_id=c_id,
             document_id=doc_id,
@@ -136,15 +134,15 @@ async def extract_paper_metadata(openai_client, text_sample: str) -> PaperMetada
         content = resp.choices[0].message.content
         if not content:
             raise ValueError("Empty response from OpenAI")
-            
+
         data = json.loads(content)
         # Ensure year is an int or None
         if "year" in data and data["year"]:
             try:
                 data["year"] = int(data["year"])
-            except:
+            except (ValueError, TypeError):
                 data["year"] = None
-                
+
         return PaperMetadata(**data)
     except Exception as e:
         logger.warning(f"METADATA: Failed to extract, using empty default — {e}")
@@ -164,7 +162,7 @@ async def verify_faithfulness(openai_client, query: str, answer: str, context_ch
     Evaluates if the generated answer is strictly supported by the provided context.
     """
     context_text = "\n".join([f"[{i}] {c['text']}" for i, c in enumerate(context_chunks)])
-    
+
     prompt = (
         "You are a Research Verification Judge. Your task is to evaluate if a generated answer is FAITHFUL to the provided context.\n\n"
         "CONTEXT:\n"
@@ -191,7 +189,8 @@ async def verify_faithfulness(openai_client, query: str, answer: str, context_ch
 
 def count_tokens(text: str) -> int:
     """Accurate token counting using tiktoken (Step 47)."""
-    if not text: return 0
+    if not text:
+        return 0
     return len(TOKEN_ENCODER.encode(text))
 
 def estimate_cost(input_tokens: int, output_tokens: int, model: str) -> float:
@@ -201,7 +200,7 @@ def estimate_cost(input_tokens: int, output_tokens: int, model: str) -> float:
         "gpt-4o-mini": {"in": 0.15, "out": 0.60},
         "text-embedding-3-small": {"in": 0.02, "out": 0.0}
     }
-    
+
     config = rates.get(model, {"in": 0.0, "out": 0.0})
     cost = (input_tokens / 1_000_000 * config["in"]) + (output_tokens / 1_000_000 * config["out"])
     return round(cost, 6)
@@ -432,7 +431,7 @@ def compute_graph_edges(papers: list) -> dict:
 async def generate_query_variations(client, query: str) -> List[str]:
     """Step 49: AI-driven query expansion for improved retrieval recall."""
     prompt = f"Generate 3 distinct search variations for a vector database to answer: '{query}'. Provide ONLY the search queries, one per line."
-    
+
     resp = await client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
@@ -441,7 +440,7 @@ async def generate_query_variations(client, query: str) -> List[str]:
         ],
         temperature=0.3
     )
-    
+
     text = resp.choices[0].message.content
     variations = [line.strip().strip("- ") for line in text.split("\n") if line.strip()]
     # Ensure original query is included

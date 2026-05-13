@@ -1,9 +1,9 @@
 import operator
-from typing import Annotated, List, TypedDict, Union, Dict, Any
+from typing import Annotated, List, TypedDict
 
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
-from langgraph.graph import StateGraph, START, END
+from langchain_core.messages import BaseMessage, SystemMessage
+from langgraph.graph import StateGraph, START
 from langgraph.prebuilt import ToolNode, tools_condition
 
 from app.services.tools import arxiv_search_tool, python_repl_tool, rag_tool, auto_ingest_paper_tool, list_vault_papers_tool
@@ -58,7 +58,7 @@ async def call_model(state: ResearchState):
             "Always prioritize the local vault for precision. Cite your sources using [N] notation."
         ))
         messages = [system_msg] + messages
-    
+
     response = await llm_with_tools.ainvoke(messages)
     return {"messages": [response]}
 

@@ -26,7 +26,7 @@ def _build_exact_cache_key(tenant_id: str, query: str) -> str: # build the exact
     """
     Queries are long so they become bad Redis keys, so here we are converting queries into fixed length keys we use a stable hash.
     Also the tenant prefix keeps cache hits isolated across teams.
-    """  
+    """
     query_hash = hashlib.sha256(query.encode("utf-8")).hexdigest() # Encodes the query string into bytes, creates SHA-256 hash, returns hexadecimal string
     return f"{EXACT_CACHE_PREFIX}:{tenant_id}:{query_hash}" #Final key looks like: researhub:query:team123:abc123hash
 
@@ -35,12 +35,12 @@ def init_cache_db(): # This runs at startup in main.py, this is used to initiali
     client = get_qdrant()
     collections = client.get_collections().collections
     exists = any(c.name == CACHE_COLLECTION for c in collections) #Checks if collection already exists
-    
+
     if not exists:
         client.create_collection(
             collection_name=CACHE_COLLECTION,
             vectors_config=rest.VectorParams(
-                size=EMBEDDING_DIMENSIONS, 
+                size=EMBEDDING_DIMENSIONS,
                 distance=rest.Distance.COSINE
             )
         )
@@ -114,11 +114,11 @@ async def invalidate_semantic_cache_for_tenant(tenant_id: str) -> None:
 async def semantic_cache_get(tenant_id: str, query: str) -> Optional[dict]:
     """Retrieves cached research responses using semantic similarity."""
     client = get_qdrant()
-    
+
     # 1. Embed the query
     resp = await openai_client.embeddings.create(input=[query], model=EMBEDDING_MODEL, dimensions=EMBEDDING_DIMENSIONS) #
     vector = resp.data[0].embedding
-    
+
     # 2. Search for similar queries using the modern query_points API (Step 14 Fix)
     results = client.query_points(
         collection_name=CACHE_COLLECTION,
@@ -128,25 +128,25 @@ async def semantic_cache_get(tenant_id: str, query: str) -> Optional[dict]:
         ),
         limit=1
     ).points
-    
+
     if results and results[0].score >= SIMILARITY_THRESHOLD:
         logger.info(f"CACHE: Semantic hit (score: {results[0].score:.4f})")
         return json.loads(results[0].payload["response_json"])
-    
+
     return None
 
 async def semantic_cache_set(tenant_id: str, query: str, response: dict):
     """Caches successful research responses with embeddings."""
     client = get_qdrant()
-    
+
     # 1. Embed the query
     resp = await openai_client.embeddings.create(input=[query], model=EMBEDDING_MODEL, dimensions=EMBEDDING_DIMENSIONS)
     vector = resp.data[0].embedding
-    
+
     # 2. Store in Qdrant
     import uuid
     point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{tenant_id}_{query}"))
-    
+
     client.upsert(
         collection_name=CACHE_COLLECTION,
         points=[

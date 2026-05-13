@@ -23,7 +23,7 @@ _redis_client: Optional[redis.Redis] = None # Stores the singleton async Redis c
 # - Reused across the application
 def get_redis_client() -> redis.Redis:
     """Return a shared async Redis client, creating it only if it doesn't already exist."""
-    
+
     global _redis_client  # Allows modification of the global variable, not a local copy
 
     if _redis_client is None:
