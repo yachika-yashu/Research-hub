@@ -158,6 +158,23 @@ async def fetch_paper_references(filename: str) -> list:
             return r.json().get("references", []) if r.status_code == 200 else []
     except: return []
 
+async def reextract_references(filename: str) -> dict:
+    try:
+        enc = urllib.parse.quote(filename, safe="")
+        async with httpx.AsyncClient(timeout=120.0) as c:
+            r = await c.post(f"{API_BASE_URL}/vault/papers/{enc}/reextract-references", headers=get_headers())
+            return r.json() if r.status_code == 200 else {}
+    except: return {}
+
+async def ingest_arxiv_paper(arxiv_id: str) -> str:
+    try:
+        async with httpx.AsyncClient(timeout=300.0) as c:
+            r = await c.post(f"{API_BASE_URL}/ingest/arxiv", json={"arxiv_id": arxiv_id}, headers=get_headers())
+            data = r.json()
+            return data.get("message", "Done") if r.status_code == 200 else data.get("detail", "Failed")
+    except Exception as e:
+        return f"Error: {e}"
+
 async def fetch_bibtex_export() -> str:
     try:
         async with httpx.AsyncClient() as c:
@@ -323,16 +340,21 @@ async def fetch_alerts() -> list:
 async def ingest_file_with_progress(file):
     """Upload a single PDF, stream worker progress, return result dict or None."""
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        upload_timeout = httpx.Timeout(connect=10.0, read=120.0, write=120.0, pool=10.0)
+        sse_timeout    = httpx.Timeout(connect=10.0, read=None,  write=30.0,  pool=10.0)
+
+        async with httpx.AsyncClient(timeout=upload_timeout) as upload_client:
             files = {"file": (file.name, file.getvalue(), "application/pdf")}
             progress_bar = st.progress(0, text=f"Uploading {file.name}...")
-            r = await client.post(f"{API_BASE_URL}/ingest", files=files, headers=get_headers())
+            r = await upload_client.post(f"{API_BASE_URL}/ingest", files=files, headers=get_headers())
             if r.status_code != 200:
                 st.error(f"Failed to enqueue {file.name}: {r.text}")
                 progress_bar.empty()
                 return None
             job_id = r.json().get("job_id")
-            async with aconnect_sse(client, "GET", f"{API_BASE_URL}/ingest/stream/{job_id}",
+
+        async with httpx.AsyncClient(timeout=sse_timeout) as sse_client:
+            async with aconnect_sse(sse_client, "GET", f"{API_BASE_URL}/ingest/stream/{job_id}",
                                     headers=get_headers()) as es:
                 async for ev in es.aiter_sse():
                     data = json.loads(ev.data)
@@ -423,13 +445,16 @@ with st.sidebar:
 
         if dup_files:
             st.warning(f"Already in vault: {', '.join(f.name for f in dup_files)}")
-            if st.checkbox("Replace existing papers", key="confirm_replace"):
+            st.caption("Check the box below to re-ingest and extract missing references.")
+            if st.checkbox("Replace & re-index", key="confirm_replace"):
                 new_files = uploaded_files  # include duplicates for re-ingestion
 
-        if new_files and st.button(
-            f"Index {len(new_files)} Paper{'s' if len(new_files) > 1 else ''}",
-            width='stretch'
-        ):
+        btn_label = (
+            f"Re-index {len(new_files)} Paper{'s' if len(new_files) > 1 else ''}"
+            if all(f.name in existing_filenames for f in new_files)
+            else f"Index {len(new_files)} Paper{'s' if len(new_files) > 1 else ''}"
+        )
+        if new_files and st.button(btn_label, width='stretch'):
             ingested = 0
             for f in new_files:
                 res = run_async(ingest_file_with_progress(f))
@@ -469,46 +494,86 @@ with st.sidebar:
             if meta_parts:
                 st.caption(" · ".join(meta_parts))
 
-            # Five icon buttons in a single row — labels hidden, tooltips explain
-            c1, c2, c3, c4, c5 = st.columns(5)
             fn = paper["filename"]
 
-            with c1:
-                if st.button("📋", key=f"cite_{fn}", help="APA citation", width='stretch'):
-                    st.code(format_apa_citation(paper), language=None)
-            with c2:
-                if st.button("📝", key=f"sum_{fn}", help="Auto-summary", width='stretch'):
+            # Row 1: primary info actions
+            r1a, r1b, r1c = st.columns(3)
+            with r1a:
+                if st.button("📋 Cite", key=f"cite_{fn}", width='stretch'):
+                    st.session_state[f"_cite_{fn}"] = format_apa_citation(paper)
+            with r1b:
+                if st.button("📝 Summary", key=f"sum_{fn}", width='stretch'):
                     with st.spinner():
                         st.session_state[f"_sum_{fn}"] = run_async(fetch_paper_summary(fn)) or "Summary not available."
-            with c3:
-                if st.button("🔬", key=f"det_{fn}", help="Research details", width='stretch'):
-                    with st.spinner():
-                        d = run_async(fetch_paper_details(fn))
-                    if d:
-                        for field, label_text in [("contribution","Contribution"),("dataset","Dataset"),("limitations","Limitations")]:
-                            if d.get(field): st.caption(f"**{label_text}:** {d[field][:200]}")
-                        if d.get("baselines"): st.caption("**Baselines:** " + ", ".join(d["baselines"]))
-                    else:
-                        st.caption("Re-ingest to generate details.")
-            with c4:
-                if st.button("📖", key=f"refs_{fn}", help="References", width='stretch'):
-                    with st.spinner():
-                        refs = run_async(fetch_paper_references(fn))
-                    if refs:
-                        for ref in refs[:12]:
-                            arxiv_id = ref.get("arxiv_id")
-                            year = ref.get("year") or ""
-                            title = (ref.get("title") or "Untitled")[:60]
-                            st.caption(f"· {title} ({year})" + (f" `{arxiv_id}`" if arxiv_id else ""))
-                        if len(refs) > 12: st.caption(f"…+{len(refs)-12} more")
-                    else:
-                        st.caption("No references extracted.")
-            with c5:
+            with r1c:
+                if st.button("🔬 Details", key=f"det_{fn}", width='stretch'):
+                    try:
+                        st.session_state[f"_det_{fn}"] = run_async(fetch_paper_details(fn)) or {}
+                    except Exception:
+                        st.session_state[f"_det_{fn}"] = {}
+
+            # Row 2: references + delete
+            r2a, r2b = st.columns([3, 1])
+            with r2a:
+                if st.button("📖 References", key=f"refs_{fn}", width='stretch'):
+                    try:
+                        st.session_state[f"_refs_{fn}"] = run_async(fetch_paper_references(fn)) or []
+                    except Exception:
+                        st.session_state[f"_refs_{fn}"] = []
+            with r2b:
                 if st.button("🗑", key=f"del_{fn}", help="Remove from vault", width='stretch'):
                     if run_async(delete_vault_paper(fn)): st.rerun()
 
+            if f"_cite_{fn}" in st.session_state:
+                st.code(st.session_state[f"_cite_{fn}"], language=None)
+
             if f"_sum_{fn}" in st.session_state:
                 st.caption(st.session_state[f"_sum_{fn}"])
+
+            if f"_det_{fn}" in st.session_state:
+                d = st.session_state[f"_det_{fn}"] or {}
+                shown = 0
+                for field, label_text in [("contribution","Contribution"),("dataset","Dataset"),("limitations","Limitations")]:
+                    if d.get(field):
+                        st.caption(f"**{label_text}:** {d[field][:200]}")
+                        shown += 1
+                if d.get("baselines"):
+                    st.caption("**Baselines:** " + ", ".join(d["baselines"]))
+                    shown += 1
+                if shown == 0:
+                    st.caption("Details not populated — re-ingest this paper to generate them.")
+
+            if f"_refs_{fn}" in st.session_state:
+                refs = st.session_state[f"_refs_{fn}"] or []
+                if refs:
+                    for i, ref in enumerate(refs[:12]):
+                        ref_arxiv = ref.get("arxiv_id")
+                        year = ref.get("year") or ""
+                        title = (ref.get("title") or "Untitled")[:55]
+                        label = f"· {title} ({year})" if year else f"· {title}"
+                        if ref_arxiv:
+                            rc_text, rc_btn = st.columns([5, 1])
+                            with rc_text:
+                                st.caption(f"{label} `{ref_arxiv}`")
+                            with rc_btn:
+                                if st.button("⬇", key=f"aingest_{fn}_{i}", help=f"Ingest {ref_arxiv} into vault"):
+                                    with st.spinner(f"Ingesting {ref_arxiv}…"):
+                                        msg = run_async(ingest_arxiv_paper(ref_arxiv))
+                                    st.toast(msg)
+                        else:
+                            st.caption(label)
+                    if len(refs) > 12: st.caption(f"…+{len(refs)-12} more")
+                else:
+                    st.caption("No references extracted.")
+                    if st.button("Extract References", key=f"reextract_{fn}", use_container_width=True):
+                        with st.spinner("Extracting references…"):
+                            result = run_async(reextract_references(fn))
+                        count = result.get("references_found", 0)
+                        if count:
+                            st.session_state[f"_refs_{fn}"] = run_async(fetch_paper_references(fn))
+                            st.rerun()
+                        else:
+                            st.warning("No references found in stored text.")
 
     st.divider()
 

@@ -118,6 +118,21 @@ async def stream_ingestion_status(
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
+@router.post("/ingest/arxiv")
+async def ingest_arxiv_paper(
+    body: dict,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Download a paper from Arxiv by ID and ingest it into the vault."""
+    arxiv_id = (body.get("arxiv_id") or "").strip()
+    if not arxiv_id:
+        raise HTTPException(status_code=400, detail="arxiv_id is required")
+    message = await download_and_ingest_arxiv(arxiv_id, current_user, db)
+    ok = message.startswith("Successfully")
+    return {"ok": ok, "message": message}
+
+
 # ---------------------------------------------------------------------------
 # Vault management
 # ---------------------------------------------------------------------------
@@ -769,6 +784,67 @@ async def get_paper_references(
             for r in refs
         ]
     }
+
+
+@router.post("/vault/papers/{filename}/reextract-references")
+async def reextract_references(
+    filename: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Re-runs bibliography extraction on the stored Qdrant chunks for a paper.
+    Useful when the paper was ingested before reference extraction was in the pipeline,
+    or when the original extraction silently failed."""
+    import json as _json
+    from app.core.logic import extract_bibliography
+
+    tenant_id = current_user.tenant_id
+    client = get_qdrant()
+
+    # Retrieve all stored chunks for this paper
+    results, _ = client.scroll(
+        collection_name=QDRANT_COLLECTION,
+        scroll_filter=rest.Filter(
+            must=[
+                rest.FieldCondition(key="tenant_id", match=rest.MatchValue(value=tenant_id)),
+                rest.FieldCondition(key="metadata.filename", match=rest.MatchValue(value=filename)),
+            ]
+        ),
+        limit=2000,
+        with_payload=True,
+        with_vectors=False,
+    )
+
+    if not results:
+        raise HTTPException(status_code=404, detail="Paper not found in vault.")
+
+    # Reassemble document text ordered by chunk_index
+    chunks_sorted = sorted(results, key=lambda p: p.payload.get("chunk_index", 0))
+    full_text = "\n".join(p.payload.get("text", "") for p in chunks_sorted)
+
+    if len(full_text) < 200:
+        return {"filename": filename, "references_found": 0, "message": "Insufficient text to extract references."}
+
+    refs_data = await extract_bibliography(openai_client, full_text)
+
+    if refs_data:
+        db.query(PaperReference).filter(
+            PaperReference.tenant_id == tenant_id,
+            PaperReference.source_filename == filename
+        ).delete()
+        for ref in refs_data:
+            db.add(PaperReference(
+                tenant_id=tenant_id,
+                source_filename=filename,
+                ref_title=ref.get("title", ""),
+                ref_authors=_json.dumps(ref.get("authors") or []),
+                ref_year=ref.get("year"),
+                ref_doi=ref.get("doi"),
+                arxiv_id=ref.get("arxiv_id"),
+            ))
+        db.commit()
+
+    return {"filename": filename, "references_found": len(refs_data)}
 
 
 # ---------------------------------------------------------------------------

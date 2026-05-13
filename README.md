@@ -1,5 +1,7 @@
 # ResearchHub
 
+[![CI](https://github.com/yachika-yashu/Research-hub/actions/workflows/ci.yml/badge.svg)](https://github.com/yachika-yashu/Research-hub/actions/workflows/ci.yml)
+
 A production-grade AI research assistant for academics and engineers. Upload PDFs, chat with your papers, run literature reviews, monitor Arxiv — all in one self-hosted platform.
 
 Built with FastAPI · LangGraph · Qdrant · Redis · PostgreSQL · Streamlit · Docker
@@ -78,6 +80,11 @@ That's it. Everything else (Postgres, Qdrant, Redis) runs in Docker.
 
 ## Quick Start
 
+Or pull the pre-built image (no build step needed):
+```bash
+docker pull ghcr.io/yachika-yashu/research-hub:latest
+```
+
 ```bash
 # 1. Clone
 git clone https://github.com/yachika-yashu/Research-hub
@@ -126,6 +133,9 @@ Optional:
 
 ```
 research-hub/
+├── .github/
+│   └── workflows/
+│       └── ci.yml           # Lint + test + GHCR image push
 ├── app/
 │   ├── api/
 │   │   ├── routes.py        # All REST endpoints
@@ -136,20 +146,32 @@ research-hub/
 │   │   ├── graph.py         # LangGraph agent definition
 │   │   ├── logic.py         # Chunking, embedding, BibTeX utils
 │   │   ├── cache.py         # Two-layer cache (Redis + Qdrant)
-│   │   └── guardrails.py    # Pre-retrieval query filtering
+│   │   ├── guardrails.py    # Pre-retrieval query filtering
+│   │   ├── globals.py       # Shared singletons (clients, pools)
+│   │   ├── logging.py       # Structured logging setup
+│   │   ├── qdrant.py        # Qdrant client + collection init
+│   │   ├── redis.py         # Redis client init
+│   │   └── auth.py          # Auth helpers (token decode, user lookup)
+│   ├── schemas/
+│   │   ├── models.py        # Pydantic request/response models
+│   │   └── auth.py          # Auth-specific schemas
 │   ├── services/
 │   │   ├── ingestion.py     # PDF → chunks → Qdrant pipeline
 │   │   ├── extractor.py     # docling + OCR text extraction
 │   │   ├── vector_store.py  # Qdrant hybrid search
 │   │   └── tools.py         # LangGraph tool definitions
 │   └── worker.py            # arq task definitions + Arxiv cron
+├── tests/
+│   └── test_logic.py        # Unit tests (no external services)
 ├── dashboard.py             # Streamlit UI
 ├── main.py                  # FastAPI app entry point
 ├── docker-compose.yml       # Development setup
 ├── docker-compose.prod.yml  # Production setup (with Caddy HTTPS)
 ├── Caddyfile                # Reverse proxy + TLS config
+├── Makefile                 # Dev shortcuts (up, down, logs, shell…)
 ├── Dockerfile
 ├── requirements.txt
+├── LICENSE
 └── .env.example
 ```
 
