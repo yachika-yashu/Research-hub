@@ -22,13 +22,15 @@ def get_qdrant(): # get the qdrant client instance to use for later
     return get_qdrant_client()
 
 
-def _build_exact_cache_key(tenant_id: str, query: str) -> str: # build the exact cache key
+def _build_exact_cache_key(tenant_id: str, query: str, filename_filter: Optional[str] = None) -> str:
     """
     Queries are long so they become bad Redis keys, so here we are converting queries into fixed length keys we use a stable hash.
     Also the tenant prefix keeps cache hits isolated across teams.
+    filename_filter is folded into the hash so paper-scoped answers never collide with global ones.
     """
-    query_hash = hashlib.sha256(query.encode("utf-8")).hexdigest() # Encodes the query string into bytes, creates SHA-256 hash, returns hexadecimal string
-    return f"{EXACT_CACHE_PREFIX}:{tenant_id}:{query_hash}" #Final key looks like: researhub:query:team123:abc123hash
+    scope = filename_filter or ""
+    query_hash = hashlib.sha256(f"{scope}:{query}".encode("utf-8")).hexdigest()
+    return f"{EXACT_CACHE_PREFIX}:{tenant_id}:{query_hash}"
 
 def init_cache_db(): # This runs at startup in main.py, this is used to initialize the semantic cache collection and create payload index
     """Initializes the semantic cache collection."""
@@ -48,10 +50,10 @@ def init_cache_db(): # This runs at startup in main.py, this is used to initiali
         print(f"CACHE: Collection '{CACHE_COLLECTION}' initialized.")
 
 
-async def exact_cache_get(tenant_id: str, query: str) -> Optional[dict]:
+async def exact_cache_get(tenant_id: str, query: str, filename_filter: Optional[str] = None) -> Optional[dict]:
     """Fast exact-match cache backed by Redis for repeated identical prompts."""
     client = get_redis_client()
-    cache_key = _build_exact_cache_key(tenant_id, query)
+    cache_key = _build_exact_cache_key(tenant_id, query, filename_filter)
     try:
         cached = await client.get(cache_key)
     except Exception as exc:
@@ -65,10 +67,10 @@ async def exact_cache_get(tenant_id: str, query: str) -> Optional[dict]:
     return json.loads(cached)
 
 
-async def exact_cache_set(tenant_id: str, query: str, response: dict) -> None:
+async def exact_cache_set(tenant_id: str, query: str, response: dict, filename_filter: Optional[str] = None) -> None:
     """Store exact query responses in Redis with TTL to prevent stale indefinite reuse."""
     client = get_redis_client()
-    cache_key = _build_exact_cache_key(tenant_id, query)
+    cache_key = _build_exact_cache_key(tenant_id, query, filename_filter)
     try:
         await client.set(cache_key, json.dumps(response), ex=REDIS_EXACT_CACHE_TTL_SECONDS)
         logger.info(f"CACHE: Exact Redis stored for '{query[:30]}...'")
@@ -111,20 +113,23 @@ async def invalidate_semantic_cache_for_tenant(tenant_id: str) -> None:
         logger.warning(f"CACHE: Semantic cache invalidation bypassed — {exc}")
 
 
-async def semantic_cache_get(tenant_id: str, query: str) -> Optional[dict]:
+async def semantic_cache_get(tenant_id: str, query: str, filename_filter: Optional[str] = None) -> Optional[dict]:
     """Retrieves cached research responses using semantic similarity."""
     client = get_qdrant()
 
-    # 1. Embed the query
-    resp = await openai_client.embeddings.create(input=[query], model=EMBEDDING_MODEL, dimensions=EMBEDDING_DIMENSIONS) #
+    resp = await openai_client.embeddings.create(input=[query], model=EMBEDDING_MODEL, dimensions=EMBEDDING_DIMENSIONS)
     vector = resp.data[0].embedding
 
-    # 2. Search for similar queries using the modern query_points API (Step 14 Fix)
+    # Match on tenant + exact filename_filter scope so paper-scoped answers
+    # never collide with global ones (or with a different paper's answers).
     results = client.query_points(
         collection_name=CACHE_COLLECTION,
         query=vector,
         query_filter=rest.Filter(
-            must=[rest.FieldCondition(key="tenant_id", match=rest.MatchValue(value=tenant_id))]
+            must=[
+                rest.FieldCondition(key="tenant_id", match=rest.MatchValue(value=tenant_id)),
+                rest.FieldCondition(key="filename_filter", match=rest.MatchValue(value=filename_filter or "")),
+            ]
         ),
         limit=1
     ).points
@@ -135,17 +140,16 @@ async def semantic_cache_get(tenant_id: str, query: str) -> Optional[dict]:
 
     return None
 
-async def semantic_cache_set(tenant_id: str, query: str, response: dict):
+async def semantic_cache_set(tenant_id: str, query: str, response: dict, filename_filter: Optional[str] = None):
     """Caches successful research responses with embeddings."""
     client = get_qdrant()
 
-    # 1. Embed the query
     resp = await openai_client.embeddings.create(input=[query], model=EMBEDDING_MODEL, dimensions=EMBEDDING_DIMENSIONS)
     vector = resp.data[0].embedding
 
-    # 2. Store in Qdrant
     import uuid
-    point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{tenant_id}_{query}"))
+    scope = filename_filter or ""
+    point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{tenant_id}_{scope}_{query}"))
 
     client.upsert(
         collection_name=CACHE_COLLECTION,
@@ -156,6 +160,7 @@ async def semantic_cache_set(tenant_id: str, query: str, response: dict):
                 payload={
                     "query": query,
                     "tenant_id": tenant_id,
+                    "filename_filter": scope,
                     "response_json": json.dumps(response),
                     "model": GENERATION_MODEL
                 }

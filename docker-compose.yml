@@ -127,7 +127,6 @@ services:
   qdrant:
     image: qdrant/qdrant:v1.13.6
     volumes:
-      - ./qdrant_storage:/qdrant/storage
     healthcheck:
       test: [ "CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1" ]
       interval: 10s
@@ -205,7 +204,8 @@ services:
     ports:
       - "8501:8501"
     volumes:
-      - ./dashboard:/app/dashboard  # Bind mount for live code updates (optional, can be removed in production)
+      - ./dashboard.py:/app/dashboard.py  # Hot-reload for main dashboard file
+      - ./dashboard:/app/dashboard
     environment:
       - API_BASE_URL=http://api:8000/api/v1
     depends_on:

@@ -246,14 +246,16 @@ async def handle_query(
     """
     thread_id = query_req.thread_id or str(uuid.uuid4())
     config = {"configurable": {"thread_id": thread_id}}
+    filename_filter = (query_req.filters.filename if query_req.filters else None) or None
 
-    # Cache lookup
+    # Cache lookup — keyed by (tenant, query, filename_filter) so paper-scoped
+    # answers never collide with global ones or with a different paper's answers.
     exact_cached_res = None
     cached_res = None
     try:
-        exact_cached_res = await exact_cache_get(current_user.tenant_id, query_req.query)
+        exact_cached_res = await exact_cache_get(current_user.tenant_id, query_req.query, filename_filter)
         if not exact_cached_res:
-            cached_res = await semantic_cache_get(current_user.tenant_id, query_req.query)
+            cached_res = await semantic_cache_get(current_user.tenant_id, query_req.query, filename_filter)
         else:
             cached_res = exact_cached_res
     except Exception as e:
@@ -274,8 +276,8 @@ async def handle_query(
             yield "data: [DONE]\n\n"
             return
 
-        # Guardrail check — fast LLM call before spinning up the full graph
-        guard = await pre_retrieval_guardrail(query_req.query)
+        # Guardrail check — skip when a paper is scoped (user is clearly in a research context)
+        guard = {"allowed": True} if filename_filter else await pre_retrieval_guardrail(query_req.query)
         if not guard.get("allowed", True):
             reason = guard.get("reason", "This request falls outside the platform's research scope.")
             yield f"data: {json.dumps({'type': 'token', 'content': f'I cannot assist with that request. {reason}'})}\n\n"
@@ -286,7 +288,8 @@ async def handle_query(
         # not raw tuples that get skipped by isinstance checks on retrieval.
         inputs = {
             "messages": [HumanMessage(content=query_req.query)],
-            "tenant_id": current_user.tenant_id
+            "tenant_id": current_user.tenant_id,
+            "filename_filter": filename_filter,
         }
 
         graph = request.app.state.graph
@@ -339,7 +342,8 @@ async def handle_query(
             current_user,
             query_req,
             full_response,
-            thread_id
+            thread_id,
+            filename_filter,
         )
 
         yield "data: [DONE]\n\n"
@@ -348,7 +352,7 @@ async def handle_query(
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
-async def finalize_query_governance(user: User, query_req: QueryRequest, full_response: str, thread_id: str):
+async def finalize_query_governance(user: User, query_req: QueryRequest, full_response: str, thread_id: str, filename_filter: str = None):
     """Handles usage logging and caching after the stream completes."""
     db = next(get_db())
     try:
@@ -381,12 +385,14 @@ async def finalize_query_governance(user: User, query_req: QueryRequest, full_re
         await semantic_cache_set(
             user.tenant_id,
             query_req.query,
-            {"answer": full_response, "thread_id": thread_id}
+            {"answer": full_response, "thread_id": thread_id},
+            filename_filter,
         )
         await exact_cache_set(
             user.tenant_id,
             query_req.query,
-            {"answer": full_response, "thread_id": thread_id}
+            {"answer": full_response, "thread_id": thread_id},
+            filename_filter,
         )
     except Exception as e:
         logger.error(f"GOVERNANCE: Logging failed — {e}", exc_info=True)

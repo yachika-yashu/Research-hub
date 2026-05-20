@@ -22,6 +22,7 @@ ALLOW everything else, including:
 - Code for data analysis or visualisation
 - Questions that seem tangential but could be part of research workflows
 - Ethical debates or controversial scientific topics
+- Short or vague questions about an uploaded paper (e.g. "what is the name of this paper", "summarise this", "what are the findings") — the platform provides paper context automatically, so the query does not need to be self-contained
 
 When in doubt, ALLOW. Over-restriction is harmful to legitimate research.
 

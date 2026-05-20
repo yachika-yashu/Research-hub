@@ -1,5 +1,5 @@
 import operator
-from typing import Annotated, List, TypedDict
+from typing import Annotated, List, Optional, TypedDict
 
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import BaseMessage, SystemMessage
@@ -11,11 +11,9 @@ from app.core.config import GENERATION_MODEL, GENERATION_TEMP
 
 # Define the state of the graph
 class ResearchState(TypedDict):
-    # messages: The history of the conversation, with add_messages-like behavior
-    # We'll use Annotated to specify how to merge new messages
     messages: Annotated[List[BaseMessage], operator.add]
-    # tenant_id: To ensure isolation across tools
     tenant_id: str
+    filename_filter: Optional[str]  # when set, scope all rag_tool calls to this paper
 
 # Initialize the LLM
 llm = ChatOpenAI(model=GENERATION_MODEL, temperature=GENERATION_TEMP)
@@ -36,22 +34,26 @@ async def call_model(state: ResearchState):
     messages = state["messages"]
     if not any(isinstance(m, SystemMessage) for m in messages):
         tenant_id = state.get("tenant_id", "default")
+        filename_filter = state.get("filename_filter")
+
+        scope_instruction = (
+            f"PAPER SCOPE: The user has scoped this conversation to a single paper: '{filename_filter}'. "
+            f"You MUST pass filename='{filename_filter}' to every rag_tool call. "
+            "Do NOT search other papers. If asked 'what is the name of this paper', the answer is that filename."
+        ) if filename_filter else (
+            "VAULT AUTHORITY: If the user asks for the name of the paper, what was just uploaded, or refers to 'the paper', "
+            "you MUST call list_vault_papers_tool first to identify the correct file by its upload date. "
+            "Do NOT use semantic search (rag_tool) for identifying which file exists in the vault."
+        )
+
         system_msg = SystemMessage(content=(
             "You are Hanuman, a Research Intelligence Assistant. "
             f"Your current Research Vault ID is: {tenant_id}. "
             "You have access to a local research vault (internal database), Arxiv search, and a Python Sandbox. "
             "IMPORTANT: All papers the user uploads are stored in the local vault. "
-            # list_vault_papers_tool gives exact filenames; rag_tool does semantic
-            # search which can match wrong papers — don't use it to identify files.
-            "VAULT AUTHORITY: If the user asks for the name of the paper, what was just uploaded, or refers to 'the paper', "
-            "you MUST call list_vault_papers_tool first to identify the correct file by its upload date. "
-            "Do NOT use semantic search (rag_tool) for identifying which file exists in the vault. "
-            # Second-pass search recovers figures/tables that rank low in the first pass
-            # because their chunk text is mostly the image markdown, not descriptive words.
+            f"{scope_instruction} "
             "DEEP DISCOVERY: If you are looking for a specific Figure, Diagram, or Detail and cannot find it "
             "in the first RAG search, perform a SECOND search using the filename + specific keywords like 'Figure Content' or 'Table Data'. "
-            # Without this instruction the LLM paraphrases image markdown and drops
-            # the URL, making figures invisible to the user in the Streamlit UI.
             "IMAGES: Context chunks may contain markdown images like ![Figure](URL). "
             "Always include these image tags verbatim in your response so the user can see the visual. "
             "Never omit or paraphrase image markdown — copy it exactly as-is. "

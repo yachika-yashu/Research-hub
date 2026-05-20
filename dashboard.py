@@ -464,116 +464,44 @@ with st.sidebar:
                 st.success(f"Indexed {ingested} paper(s).")
                 st.rerun()
 
-    # BibTeX export — one click for the whole vault
-    if vault_papers:
-        bib_content = run_async(fetch_bibtex_export())
-        if bib_content:
-            st.download_button(
-                "⬇ Export BibTeX (.bib)",
-                data=bib_content,
-                file_name="vault.bib",
-                mime="text/plain",
-                use_container_width=True,
-            )
-
     st.divider()
 
-    # ── Vault ─────────────────────────────────────────────────────────────────
+    # ── Vault (compact — full actions live in the Library tab) ────────────────
     st.caption(f"📚 {len(vault_papers)} paper{'s' if len(vault_papers) != 1 else ''} in vault" if vault_papers else "📚 No papers yet")
     for paper in vault_papers:
         display_title = paper.get("title") or paper["filename"]
         if display_title == "Unknown Research Paper":
             display_title = paper["filename"]
-        label = display_title if len(display_title) <= 34 else display_title[:32] + "…"
+        label = display_title if len(display_title) <= 26 else display_title[:24] + "…"
+        fn = paper["filename"]
+        is_selected = st.session_state.filter_paper == fn
+        pc, pd = st.columns([6, 1])
+        with pc:
+            if st.button(
+                label, key=f"focus_{fn}", use_container_width=True,
+                help="Chat about this paper",
+                type="primary" if is_selected else "secondary",
+            ):
+                st.session_state.filter_paper = fn
+                st.session_state.messages   = []
+                st.session_state.thread_id  = None
+                st.rerun()
+        with pd:
+            if st.button("🗑", key=f"del_{fn}", help="Remove from vault"):
+                if run_async(delete_vault_paper(fn)): st.rerun()
 
-        with st.expander(label):
-            # One-line metadata — author + year only, keep it tight
-            meta_parts = []
-            if paper.get("authors"): meta_parts.append(paper["authors"][0].split(",")[0])
-            if paper.get("year"):    meta_parts.append(str(paper["year"]))
-            if meta_parts:
-                st.caption(" · ".join(meta_parts))
-
-            fn = paper["filename"]
-
-            # Row 1: primary info actions
-            r1a, r1b, r1c = st.columns(3)
-            with r1a:
-                if st.button("📋 Cite", key=f"cite_{fn}", width='stretch'):
-                    st.session_state[f"_cite_{fn}"] = format_apa_citation(paper)
-            with r1b:
-                if st.button("📝 Summary", key=f"sum_{fn}", width='stretch'):
-                    with st.spinner():
-                        st.session_state[f"_sum_{fn}"] = run_async(fetch_paper_summary(fn)) or "Summary not available."
-            with r1c:
-                if st.button("🔬 Details", key=f"det_{fn}", width='stretch'):
-                    try:
-                        st.session_state[f"_det_{fn}"] = run_async(fetch_paper_details(fn)) or {}
-                    except Exception:
-                        st.session_state[f"_det_{fn}"] = {}
-
-            # Row 2: references + delete
-            r2a, r2b = st.columns([3, 1])
-            with r2a:
-                if st.button("📖 References", key=f"refs_{fn}", width='stretch'):
-                    try:
-                        st.session_state[f"_refs_{fn}"] = run_async(fetch_paper_references(fn)) or []
-                    except Exception:
-                        st.session_state[f"_refs_{fn}"] = []
-            with r2b:
-                if st.button("🗑", key=f"del_{fn}", help="Remove from vault", width='stretch'):
-                    if run_async(delete_vault_paper(fn)): st.rerun()
-
-            if f"_cite_{fn}" in st.session_state:
-                st.code(st.session_state[f"_cite_{fn}"], language=None)
-
-            if f"_sum_{fn}" in st.session_state:
-                st.caption(st.session_state[f"_sum_{fn}"])
-
-            if f"_det_{fn}" in st.session_state:
-                d = st.session_state[f"_det_{fn}"] or {}
-                shown = 0
-                for field, label_text in [("contribution","Contribution"),("dataset","Dataset"),("limitations","Limitations")]:
-                    if d.get(field):
-                        st.caption(f"**{label_text}:** {d[field][:200]}")
-                        shown += 1
-                if d.get("baselines"):
-                    st.caption("**Baselines:** " + ", ".join(d["baselines"]))
-                    shown += 1
-                if shown == 0:
-                    st.caption("Details not populated — re-ingest this paper to generate them.")
-
-            if f"_refs_{fn}" in st.session_state:
-                refs = st.session_state[f"_refs_{fn}"] or []
-                if refs:
-                    for i, ref in enumerate(refs[:12]):
-                        ref_arxiv = ref.get("arxiv_id")
-                        year = ref.get("year") or ""
-                        title = (ref.get("title") or "Untitled")[:55]
-                        label = f"· {title} ({year})" if year else f"· {title}"
-                        if ref_arxiv:
-                            rc_text, rc_btn = st.columns([5, 1])
-                            with rc_text:
-                                st.caption(f"{label} `{ref_arxiv}`")
-                            with rc_btn:
-                                if st.button("⬇", key=f"aingest_{fn}_{i}", help=f"Ingest {ref_arxiv} into vault"):
-                                    with st.spinner(f"Ingesting {ref_arxiv}…"):
-                                        msg = run_async(ingest_arxiv_paper(ref_arxiv))
-                                    st.toast(msg)
-                        else:
-                            st.caption(label)
-                    if len(refs) > 12: st.caption(f"…+{len(refs)-12} more")
-                else:
-                    st.caption("No references extracted.")
-                    if st.button("Extract References", key=f"reextract_{fn}", use_container_width=True):
-                        with st.spinner("Extracting references…"):
-                            result = run_async(reextract_references(fn))
-                        count = result.get("references_found", 0)
-                        if count:
-                            st.session_state[f"_refs_{fn}"] = run_async(fetch_paper_references(fn))
-                            st.rerun()
-                        else:
-                            st.warning("No references found in stored text.")
+    if vault_papers:
+        scope_options = ["All Papers"] + [p["filename"] for p in vault_papers]
+        current_scope = st.session_state.filter_paper or "All Papers"
+        if current_scope not in scope_options:
+            current_scope = "All Papers"
+        chosen = st.selectbox(
+            "Chat scope", scope_options,
+            index=scope_options.index(current_scope),
+            label_visibility="collapsed",
+            help="Scope chat questions to a single paper",
+        )
+        st.session_state.filter_paper = None if chosen == "All Papers" else chosen
 
     st.divider()
 
@@ -650,8 +578,8 @@ with st.sidebar:
 # MAIN TABS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-tab_chat, tab_analyze, tab_notes, tab_workspace = st.tabs([
-    "💬 Research Chat", "🔭 Analyze", "📝 My Notes", "📊 Workspace"
+tab_chat, tab_library, tab_analyze, tab_notes, tab_workspace = st.tabs([
+    "💬 Research Chat", "📚 Library", "🔭 Analyze", "📝 My Notes", "📊 Workspace"
 ])
 
 
@@ -811,7 +739,130 @@ with tab_chat:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB 2 — ANALYZE (Literature Review + Knowledge Graph)
+# TAB 2 — LIBRARY
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_library:
+    st.title("Library")
+
+    if not vault_papers:
+        st.info("No papers in your vault yet. Upload PDFs using the sidebar.")
+    else:
+        bib_content_lib = run_async(fetch_bibtex_export())
+        if bib_content_lib:
+            st.download_button(
+                "⬇ Export All as BibTeX",
+                data=bib_content_lib,
+                file_name="vault.bib",
+                mime="text/plain",
+            )
+
+        for paper in vault_papers:
+            display_title = paper.get("title") or paper["filename"]
+            if display_title == "Unknown Research Paper":
+                display_title = paper["filename"]
+            fn = paper["filename"]
+
+            meta_parts = []
+            if paper.get("authors"): meta_parts.append(paper["authors"][0].split(",")[0])
+            if paper.get("year"):    meta_parts.append(str(paper["year"]))
+            expander_label = display_title + (f"  ·  {' · '.join(meta_parts)}" if meta_parts else "")
+
+            with st.expander(expander_label, expanded=False):
+                # Metadata row
+                if paper.get("keywords"):
+                    st.caption("**Keywords:** " + ", ".join(paper["keywords"][:6]))
+                if paper.get("journal"):
+                    st.caption(f"**Journal:** {paper['journal']}")
+
+                r1a, r1b, r1c, r1d, r1e = st.columns(5)
+                with r1a:
+                    if st.button("💬 Chat", key=f"lib_chat_{fn}", use_container_width=True,
+                                 help="Scope chat to this paper"):
+                        st.session_state.filter_paper = fn
+                        st.session_state.messages     = []
+                        st.session_state.thread_id    = None
+                        st.rerun()
+                with r1b:
+                    if st.button("📋 Cite", key=f"lib_cite_{fn}", use_container_width=True):
+                        st.session_state[f"_lib_cite_{fn}"] = format_apa_citation(paper)
+                with r1c:
+                    if st.button("📝 Summary", key=f"lib_sum_{fn}", use_container_width=True):
+                        with st.spinner("Generating summary…"):
+                            st.session_state[f"_lib_sum_{fn}"] = run_async(fetch_paper_summary(fn)) or "Summary not available."
+                with r1d:
+                    if st.button("🔬 Details", key=f"lib_det_{fn}", use_container_width=True):
+                        try:
+                            st.session_state[f"_lib_det_{fn}"] = run_async(fetch_paper_details(fn)) or {}
+                        except Exception:
+                            st.session_state[f"_lib_det_{fn}"] = {}
+                with r1e:
+                    if st.button("🗑 Delete", key=f"lib_del_{fn}", use_container_width=True):
+                        if run_async(delete_vault_paper(fn)): st.rerun()
+
+                if f"_lib_cite_{fn}" in st.session_state:
+                    st.code(st.session_state[f"_lib_cite_{fn}"], language=None)
+
+                if f"_lib_sum_{fn}" in st.session_state:
+                    st.info(st.session_state[f"_lib_sum_{fn}"])
+
+                if f"_lib_det_{fn}" in st.session_state:
+                    d = st.session_state[f"_lib_det_{fn}"] or {}
+                    shown = 0
+                    for field, label_text in [("contribution","Contribution"),("dataset","Dataset"),("limitations","Limitations")]:
+                        if d.get(field):
+                            st.markdown(f"**{label_text}:** {d[field]}")
+                            shown += 1
+                    if d.get("baselines"):
+                        st.markdown("**Baselines:** " + ", ".join(d["baselines"]))
+                        shown += 1
+                    if shown == 0:
+                        st.caption("Details not populated — re-ingest this paper to generate them.")
+
+                # References section
+                st.divider()
+                ref_col, _ = st.columns([2, 3])
+                with ref_col:
+                    if st.button("📖 Load References", key=f"lib_refs_{fn}", use_container_width=True):
+                        try:
+                            st.session_state[f"_lib_refs_{fn}"] = run_async(fetch_paper_references(fn)) or []
+                        except Exception:
+                            st.session_state[f"_lib_refs_{fn}"] = []
+
+                if f"_lib_refs_{fn}" in st.session_state:
+                    refs = st.session_state[f"_lib_refs_{fn}"] or []
+                    if refs:
+                        for i, ref in enumerate(refs[:15]):
+                            ref_arxiv = ref.get("arxiv_id")
+                            year  = ref.get("year") or ""
+                            title = (ref.get("title") or "Untitled")[:70]
+                            rlabel = f"· {title} ({year})" if year else f"· {title}"
+                            if ref_arxiv:
+                                rc_text, rc_btn = st.columns([6, 1])
+                                with rc_text:
+                                    st.caption(f"{rlabel} `{ref_arxiv}`")
+                                with rc_btn:
+                                    if st.button("⬇", key=f"lib_aingest_{fn}_{i}", help=f"Ingest {ref_arxiv}"):
+                                        with st.spinner(f"Ingesting {ref_arxiv}…"):
+                                            msg = run_async(ingest_arxiv_paper(ref_arxiv))
+                                        st.toast(msg)
+                            else:
+                                st.caption(rlabel)
+                        if len(refs) > 15: st.caption(f"…+{len(refs)-15} more")
+                    else:
+                        st.caption("No references extracted.")
+                        if st.button("Extract References", key=f"lib_reextract_{fn}", use_container_width=True):
+                            with st.spinner("Extracting references…"):
+                                result = run_async(reextract_references(fn))
+                            count = result.get("references_found", 0)
+                            if count:
+                                st.session_state[f"_lib_refs_{fn}"] = run_async(fetch_paper_references(fn))
+                                st.rerun()
+                            else:
+                                st.warning("No references found in stored text.")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 3 — ANALYZE (Literature Review + Knowledge Graph)
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab_analyze:
     st.title("Analyze")
