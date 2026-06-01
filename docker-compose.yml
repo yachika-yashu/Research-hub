@@ -178,7 +178,10 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 12
+      # Heavy imports (docling, fastembed, ragas, mlflow) need 30–60s on cold runners.
+      # Failures during start_period don't count against retries.
+      start_period: 90s
   # Background Task Queue (Ingestion Worker)
   worker:
     build: .

@@ -1,0 +1,24 @@
+# CI override: applied on top of docker-compose.yml during the benchmark gate.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d --build api worker
+#
+# Differences from local dev:
+#   - api runs under gunicorn (no --reload). The watchfiles reloader doubles
+#     cold-start time on GitHub runners and is pointless without a bind mount.
+#   - bind mounts removed so the running code matches the built image.
+#   - dashboard / mlflow are not started — the benchmark scripts hit the api
+#     directly, and dashboard depends_on api: service_healthy makes a healthcheck
+#     race fail the whole `up` invocation.
+
+services:
+  api:
+    command: gunicorn -c gunicorn_conf.py main:app
+    # One worker is enough for benchmarks and keeps cold-start memory low on
+    # the runner. Each worker reloads docling/fastembed/ragas/mlflow at boot.
+    environment:
+      - GUNICORN_WORKERS=1
+    volumes: []
+
+  worker:
+    volumes: []
