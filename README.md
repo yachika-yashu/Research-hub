@@ -8,7 +8,13 @@ A production-grade AI research assistant for academics and engineers. Upload PDF
 Built with FastAPI · LangGraph · Qdrant · Redis · PostgreSQL · Streamlit · Docker
 
 ---
+## Deep Dive: End-to-End Agentic AI Platform (Demo Walkthrough)
 
+Explore the full system architecture, agent orchestration, and production design.
+[![Watch Video](assets/images/1.jpg)](https://www.youtube.com/watch?v=pc9u-_JEkc8)
+
+
+---
 ## Features
 
 | Feature | Description |
