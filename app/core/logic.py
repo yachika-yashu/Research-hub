@@ -158,34 +158,84 @@ async def embed_chunks(openai_client, chunks: List[DocumentChunk]) -> List[Docum
 
 async def verify_faithfulness(openai_client, query: str, answer: str, context_chunks: List[dict]) -> dict:
     """
-    Step 46: Rag-as-a-Judge.
-    Evaluates if the generated answer is strictly supported by the provided context.
-    """
-    context_text = "\n".join([f"[{i}] {c['text']}" for i, c in enumerate(context_chunks)])
+    RAG-as-a-Judge with RAGAS primary evaluation and LLM-as-judge fallback.
 
+    Evaluation order:
+    1. RAGAS faithfulness metric (uses LangChain + OpenAI internally).
+    2. LLM-as-judge prompt (original approach) if RAGAS is unavailable or fails.
+    3. Honest failure: returns faithfulness_score=0.0 on any unrecoverable error.
+       Never returns the fake default of 1.0 that masked all evaluation errors.
+    """
+    import asyncio
+
+    contexts = [c.get("text", "") for c in context_chunks if c.get("text")]
+
+    # ── Primary: RAGAS ────────────────────────────────────────────────────────
+    try:
+        from datasets import Dataset
+        from ragas import evaluate as ragas_evaluate
+        from ragas.metrics import faithfulness as ragas_faithfulness
+        from ragas.llms import LangchainLLMWrapper
+        from langchain_openai import ChatOpenAI
+
+        evaluator_llm = LangchainLLMWrapper(ChatOpenAI(model=GENERATION_MODEL, temperature=0.0))
+        dataset = Dataset.from_dict({
+            "question": [query],
+            "answer":   [answer],
+            "contexts": [contexts],
+        })
+
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: ragas_evaluate(dataset, metrics=[ragas_faithfulness], llm=evaluator_llm),
+        )
+        score = round(float(result["faithfulness"]), 4)
+        logger.info(f"VERIFIER: RAGAS faithfulness = {score:.3f}")
+        return {
+            "faithfulness_score": score,
+            "reasoning": f"RAGAS faithfulness evaluation score: {score:.3f}",
+            "is_well_grounded": score >= 0.75,
+            "evaluator": "ragas",
+        }
+
+    except ImportError:
+        logger.info("VERIFIER: RAGAS/datasets not available — using LLM-as-judge fallback.")
+    except Exception as ragas_exc:
+        logger.warning(f"VERIFIER: RAGAS failed ({type(ragas_exc).__name__}: {ragas_exc}) — using LLM-as-judge fallback.")
+
+    # ── Fallback: LLM-as-judge ────────────────────────────────────────────────
+    context_text = "\n".join([f"[{i}] {t}" for i, t in enumerate(contexts)])
     prompt = (
-        "You are a Research Verification Judge. Your task is to evaluate if a generated answer is FAITHFUL to the provided context.\n\n"
+        "You are a Research Verification Judge. Evaluate if the answer is FAITHFUL to the context.\n\n"
         "CONTEXT:\n"
         f"{context_text}\n\n"
         f"QUERY: {query}\n"
         f"GENERATED ANSWER: {answer}\n\n"
         "Return ONLY a JSON object with:\n"
-        "- faithfulness_score: (float between 0.0 and 1.0)\n"
-        "- reasoning: (brief string explaining the score)\n"
+        "- faithfulness_score: (float 0.0–1.0)\n"
+        "- reasoning: (one sentence)\n"
         "- is_well_grounded: (boolean)\n"
     )
 
     try:
         resp = await openai_client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=GENERATION_MODEL,
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
-            temperature=0.0
+            temperature=0.0,
         )
-        return json.loads(resp.choices[0].message.content)
-    except Exception as e:
-        logger.warning(f"VERIFIER: Verification failed — {e}")
-        return {"faithfulness_score": 1.0, "reasoning": "Verification bypassed due to system error.", "is_well_grounded": True}
+        result = json.loads(resp.choices[0].message.content)
+        result["evaluator"] = "llm_judge"
+        return result
+
+    except json.JSONDecodeError as exc:
+        logger.warning(f"VERIFIER: JSON decode failed — {exc}")
+        return {"faithfulness_score": 0.0, "reasoning": f"JSON parse error: {exc}", "is_well_grounded": False, "evaluator": "failed"}
+
+    except Exception as exc:
+        logger.warning(f"VERIFIER: LLM judge failed ({type(exc).__name__}: {exc})")
+        return {"faithfulness_score": 0.0, "reasoning": f"Evaluation failed: {exc}", "is_well_grounded": False, "evaluator": "failed"}
 
 def count_tokens(text: str) -> int:
     """Accurate token counting using tiktoken (Step 47)."""
@@ -195,10 +245,11 @@ def count_tokens(text: str) -> int:
 
 def estimate_cost(input_tokens: int, output_tokens: int, model: str) -> float:
     """Estimated USD cost based on standard OpenAI pricing (Step 47)."""
-    # Rates per 1M tokens (gpt-4o-mini approx prices)
+    # Rates per 1M tokens (OpenAI pricing as of 2025-05)
     rates = {
-        "gpt-4o-mini": {"in": 0.15, "out": 0.60},
-        "text-embedding-3-small": {"in": 0.02, "out": 0.0}
+        "gpt-4o":                 {"in": 5.0,  "out": 15.0},
+        "gpt-4o-mini":            {"in": 0.15, "out": 0.60},
+        "text-embedding-3-small": {"in": 0.02, "out": 0.0},
     }
 
     config = rates.get(model, {"in": 0.0, "out": 0.0})

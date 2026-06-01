@@ -1,6 +1,6 @@
 import uuid
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, Request, Depends, BackgroundTasks
@@ -34,7 +34,7 @@ from app.core.cache import (
 from app.core.logic import (
     estimate_cost, count_tokens,
     build_bibtex_entry, generate_bibtex_key, compute_graph_edges,
-    generate_lit_review,
+    generate_lit_review, verify_faithfulness,
 )
 from app.core.config import GENERATION_MODEL
 from app.core.guardrails import pre_retrieval_guardrail
@@ -247,6 +247,7 @@ async def handle_query(
     thread_id = query_req.thread_id or str(uuid.uuid4())
     config = {"configurable": {"thread_id": thread_id}}
     filename_filter = (query_req.filters.filename if query_req.filters else None) or None
+    logger.info(f"QUERY: filters_received={query_req.filters}, filename_filter={filename_filter!r}")
 
     # Cache lookup — keyed by (tenant, query, filename_filter) so paper-scoped
     # answers never collide with global ones or with a different paper's answers.
@@ -269,11 +270,13 @@ async def handle_query(
         if exact_cached_res:
             yield f"data: {json.dumps({'status': 'cache_hit', 'cache_type': 'exact', 'type': 'token', 'content': exact_cached_res['answer']})}\n\n"
             yield "data: [DONE]\n\n"
+            background_tasks.add_task(_log_cache_hit_usage, current_user, query_req.query)
             return
 
         if cached_res:
             yield f"data: {json.dumps({'status': 'cache_hit', 'cache_type': 'semantic', 'type': 'token', 'content': cached_res['answer']})}\n\n"
             yield "data: [DONE]\n\n"
+            background_tasks.add_task(_log_cache_hit_usage, current_user, query_req.query)
             return
 
         # Guardrail check — skip when a paper is scoped (user is clearly in a research context)
@@ -352,6 +355,33 @@ async def handle_query(
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
+def _log_cache_hit_usage(user: User, query: str) -> None:
+    """
+    Write a zero-cost UsageLog row for a cache hit (exact or semantic).
+    cache_hit=True in metrics_json lets cost_tracker.cache_savings_calculator()
+    count how many calls were served from cache and estimate the savings.
+    """
+    db = next(get_db())
+    try:
+        usage = UsageLog(
+            tenant_id=user.tenant_id,
+            user_id=user.id,
+            event_type="query",
+            model_name=GENERATION_MODEL,
+            tokens_input=count_tokens(query),
+            tokens_output=0,
+            estimated_cost_usd=0.0,
+            metrics_json=json.dumps({"cache_hit": True}),
+        )
+        db.add(usage)
+        db.commit()
+    except Exception as exc:
+        logger.warning(f"GOVERNANCE: Cache hit logging failed — {exc}")
+        db.rollback()
+    finally:
+        db.close()
+
+
 async def finalize_query_governance(user: User, query_req: QueryRequest, full_response: str, thread_id: str, filename_filter: str = None):
     """Handles usage logging and caching after the stream completes."""
     db = next(get_db())
@@ -372,12 +402,31 @@ async def finalize_query_governance(user: User, query_req: QueryRequest, full_re
         db.add(usage)
         db.flush()
 
+        # Re-fetch context so faithfulness evaluation has real grounding chunks
+        try:
+            context_chunks = await search_vdb(
+                query_req.query, user.tenant_id, limit=5,
+                filters=query_req.filters,
+            )
+        except Exception as vdb_exc:
+            logger.warning(f"GOVERNANCE: search_vdb failed for faithfulness — {vdb_exc}")
+            context_chunks = []
+
+        faithfulness_report = await verify_faithfulness(
+            openai_client, query_req.query, full_response, context_chunks
+        )
+
+        usage.metrics_json = json.dumps({
+            "cache_hit": False,
+            "faithfulness_score": faithfulness_report.get("faithfulness_score", 0.0),
+        })
+
         trace = TraceLog(
             usage_log_id=usage.id,
             tenant_id=user.tenant_id,
             full_prompt=query_req.query,
-            context_data_json=json.dumps([]),
-            faithfulness_report_json=json.dumps({"score": 1.0, "reason": "System verification completed"})
+            context_data_json=json.dumps([c.get("text", "") for c in context_chunks]),
+            faithfulness_report_json=json.dumps(faithfulness_report),
         )
         db.add(trace)
         db.commit()
@@ -539,7 +588,7 @@ async def get_usage_metrics(
             except Exception:
                 pass
 
-    avg_faith = sum(faith_scores) / len(faith_scores) if faith_scores else 1.0
+    avg_faith = sum(faith_scores) / len(faith_scores) if faith_scores else 0.0
 
     return {
         "tenant_id": tenant_id,
@@ -649,7 +698,7 @@ async def update_note(
         note.title = body.title
     if body.content is not None:
         note.content = body.content
-    note.updated_at = datetime.utcnow()
+    note.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(note)
     return _note_to_dict(note)

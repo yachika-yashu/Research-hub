@@ -226,6 +226,7 @@ async def download_and_ingest_arxiv(
 
         try:
             result = await process_ingestion(file_content, filename, user, db)
-            return f"Successfully ingested paper '{arxiv_id}': {result['metadata'].title}"
+            title = result.get("metadata", {}).get("title") or arxiv_id
+            return f"Successfully ingested '{arxiv_id}': {title}"
         except Exception as e:
             return f"Error during ingestion of {arxiv_id}: {str(e)}"

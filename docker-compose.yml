@@ -127,6 +127,7 @@ services:
   qdrant:
     image: qdrant/qdrant:v1.13.6
     volumes:
+      - ./qdrant_storage:/qdrant/storage
     healthcheck:
       test: [ "CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1" ]
       interval: 10s
@@ -153,6 +154,7 @@ services:
     volumes:
       - ./app:/app/app  # Bind mount for live code updates (optional, can be removed in production)
       - ./assets:/app/assets  # Shared assets dir so worker-extracted images are served by API
+      - ./benchmarking:/app/benchmarking  # Benchmarking suite (hot-reload for benchmark scripts)
     env_file:
       - .env
     environment:
@@ -161,6 +163,10 @@ services:
       - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       - CHECKPOINTS_DB_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       - TRUSTED_HOSTS=localhost,127.0.0.1,api,api:8000
+      - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY}
+      - LANGCHAIN_TRACING_V2=true
+      - LANGCHAIN_PROJECT=researchhub-benchmarking
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
     depends_on:
       postgres:
         condition: service_healthy
@@ -169,7 +175,7 @@ services:
       qdrant:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/docs"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -185,6 +191,10 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       - CHECKPOINTS_DB_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY}
+      - LANGCHAIN_TRACING_V2=true
+      - LANGCHAIN_PROJECT=researchhub-benchmarking
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
     volumes:
       - ./app:/app/app
       - ./assets:/app/assets  # Shared with API so extracted images are accessible
@@ -211,6 +221,26 @@ services:
     depends_on:
       api:
         condition: service_healthy
+
+  # MLflow experiment tracking server
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:latest
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./mlflow_data:/mlflow
+    command: >
+      mlflow server
+      --backend-store-uri sqlite:///mlflow/mlflow.db
+      --default-artifact-root /mlflow/artifacts
+      --host 0.0.0.0
+      --port 5000
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health', timeout=4)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
 volumes:
   postgres_data:

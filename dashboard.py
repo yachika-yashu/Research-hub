@@ -16,6 +16,10 @@ st.set_page_config(
 
 # --- CONFIGURATION ---
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000/api/v1")
+# Browser-facing API URL — server-to-server calls use API_BASE_URL (which inside
+# Docker resolves to http://api:8000), but anchor tags rendered in the page need
+# a host the user's browser can actually reach.
+API_PUBLIC_URL = os.getenv("API_PUBLIC_URL", "http://localhost:8000/api/v1")
 
 # --- CUSTOM CSS ---
 st.markdown("""
@@ -49,13 +53,30 @@ st.markdown("""
 # --- SESSION STATE ---
 for k, v in [
     ("auth_token", None), ("user_info", {}), ("messages", []),
-    ("thread_id", None), ("filter_paper", None), ("highlight_mode", False),
+    ("thread_id", None), ("filter_paper", None),
+    ("sidebar_scope_select", "All Papers"), ("paper_filter_select", "All Papers"),
+    ("highlight_mode", False),
     ("passage_mode", False), ("passage_results", []),
     ("lit_review_result", ""), ("graph_data", None),
     ("chip_query", None), ("note_selected_id", None), ("notes_cache", None),
 ]:
     if k not in st.session_state:
         st.session_state[k] = v
+
+# Pick up a Google SSO callback: the backend redirects here with ?token=...
+# Consume the params, store them in session state, then clear the URL so a
+# refresh doesn't re-trigger this branch.
+_qp = st.query_params
+if not st.session_state.auth_token and _qp.get("token"):
+    st.session_state.auth_token = _qp.get("token")
+    st.session_state.user_info = {
+        "access_token": _qp.get("token"),
+        "username": _qp.get("username", ""),
+        "tenant_id": _qp.get("tenant_id", ""),
+        "team_code": _qp.get("team_code", ""),
+    }
+    st.query_params.clear()
+    st.rerun()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -393,6 +414,15 @@ if not st.session_state.auth_token:
                         st.rerun()
                     else:
                         st.error(_error_msg(res, "Login failed"))
+            st.markdown(
+                f"<div style='text-align:center;margin-top:1rem;'>"
+                f"<a href='{API_PUBLIC_URL}/auth/google/login' target='_self' "
+                f"style='display:inline-block;padding:.6rem 1.2rem;border-radius:8px;"
+                f"background:#fff;color:#1f1f1f;text-decoration:none;font-weight:600;"
+                f"border:1px solid rgba(255,255,255,0.2);'>Sign in with Google</a>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
         with tab_reg:
             with st.form("reg_form"):
                 new_user = st.text_input("New Username")
@@ -423,6 +453,8 @@ with st.sidebar:
             st.session_state.messages   = []
             st.session_state.thread_id  = None
             st.session_state.filter_paper = None
+            st.session_state.sidebar_scope_select = "All Papers"
+            st.session_state.paper_filter_select = "All Papers"
             st.rerun()
     with col_out:
         if st.button("Logout", width='stretch'):
@@ -483,6 +515,8 @@ with st.sidebar:
                 type="primary" if is_selected else "secondary",
             ):
                 st.session_state.filter_paper = fn
+                st.session_state.sidebar_scope_select = fn
+                st.session_state.paper_filter_select = fn
                 st.session_state.messages   = []
                 st.session_state.thread_id  = None
                 st.rerun()
@@ -492,12 +526,12 @@ with st.sidebar:
 
     if vault_papers:
         scope_options = ["All Papers"] + [p["filename"] for p in vault_papers]
-        current_scope = st.session_state.filter_paper or "All Papers"
-        if current_scope not in scope_options:
-            current_scope = "All Papers"
+        # Ensure key value is valid (paper may have been deleted)
+        if st.session_state.sidebar_scope_select not in scope_options:
+            st.session_state.sidebar_scope_select = "All Papers"
         chosen = st.selectbox(
             "Chat scope", scope_options,
-            index=scope_options.index(current_scope),
+            key="sidebar_scope_select",
             label_visibility="collapsed",
             help="Scope chat questions to a single paper",
         )
@@ -608,11 +642,11 @@ with tab_chat:
     ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([3, 1, 1])
     with ctrl_col1:
         paper_options = ["All Papers"] + [p["filename"] for p in vault_papers]
-        filter_idx = 0
-        if st.session_state.filter_paper and st.session_state.filter_paper in paper_options:
-            filter_idx = paper_options.index(st.session_state.filter_paper)
+        # Ensure key value is valid (paper may have been deleted)
+        if st.session_state.paper_filter_select not in paper_options:
+            st.session_state.paper_filter_select = "All Papers"
         selected_paper = st.selectbox(
-            "Scope", paper_options, index=filter_idx,
+            "Scope", paper_options,
             label_visibility="collapsed", key="paper_filter_select"
         )
         st.session_state.filter_paper = None if selected_paper == "All Papers" else selected_paper
@@ -779,6 +813,8 @@ with tab_library:
                     if st.button("💬 Chat", key=f"lib_chat_{fn}", use_container_width=True,
                                  help="Scope chat to this paper"):
                         st.session_state.filter_paper = fn
+                        st.session_state.sidebar_scope_select = fn
+                        st.session_state.paper_filter_select = fn
                         st.session_state.messages     = []
                         st.session_state.thread_id    = None
                         st.rerun()
@@ -930,19 +966,104 @@ with tab_analyze:
                 nodes = graph.get("nodes", [])
                 edges = graph.get("edges", [])
 
-                st.metric("Papers (nodes)", len(nodes))
-                st.metric("Connections (edges)", len(edges))
+                m1, m2 = st.columns(2)
+                m1.metric("Papers (nodes)", len(nodes))
+                m2.metric("Connections (edges)", len(edges))
+
+                if nodes:
+                    id_to_label = {n["id"]: (n.get("label") or n["id"])[:30] for n in nodes}
+                    try:
+                        import plotly.graph_objects as go
+                        import math
+
+                        # Circular layout
+                        n_nodes = len(nodes)
+                        positions = {}
+                        for idx, node in enumerate(nodes):
+                            angle = 2 * math.pi * idx / n_nodes - math.pi / 2
+                            positions[node["id"]] = (math.cos(angle), math.sin(angle))
+
+                        # Node connection count for sizing
+                        degree = {n["id"]: 0 for n in nodes}
+                        for e in edges:
+                            degree[e["source"]] = degree.get(e["source"], 0) + 1
+                            degree[e["target"]] = degree.get(e["target"], 0) + 1
+
+                        # Edge traces
+                        edge_x, edge_y = [], []
+                        edge_labels = []
+                        for e in edges:
+                            if e["source"] in positions and e["target"] in positions:
+                                x0, y0 = positions[e["source"]]
+                                x1, y1 = positions[e["target"]]
+                                edge_x += [x0, x1, None]
+                                edge_y += [y0, y1, None]
+                                edge_labels.append(
+                                    f"{id_to_label[e['source']]} ↔ {id_to_label[e['target']]}"
+                                    + (f"\n{e.get('label','')}" if e.get("label") else "")
+                                )
+
+                        edge_trace = go.Scatter(
+                            x=edge_x, y=edge_y,
+                            mode="lines",
+                            line=dict(width=2, color="rgba(99,102,241,0.6)"),
+                            hoverinfo="none",
+                        )
+
+                        # Node traces
+                        node_x = [positions[n["id"]][0] for n in nodes]
+                        node_y = [positions[n["id"]][1] for n in nodes]
+                        node_text = [id_to_label[n["id"]] for n in nodes]
+                        node_hover = [
+                            f"<b>{id_to_label[n['id']]}</b><br>"
+                            f"Year: {n.get('year') or 'N/A'}<br>"
+                            f"Authors: {', '.join((n.get('authors') or [])[:3]) or 'N/A'}<br>"
+                            f"Connections: {degree[n['id']]}"
+                            for n in nodes
+                        ]
+                        node_sizes = [22 + 10 * degree[n["id"]] for n in nodes]
+
+                        node_trace = go.Scatter(
+                            x=node_x, y=node_y,
+                            mode="markers+text",
+                            text=node_text,
+                            textposition="top center",
+                            hovertext=node_hover,
+                            hoverinfo="text",
+                            marker=dict(
+                                size=node_sizes,
+                                color="#a5b4fc",
+                                line=dict(width=2, color="#6366f1"),
+                            ),
+                            textfont=dict(color="#e2e8f0", size=11),
+                        )
+
+                        fig = go.Figure(
+                            data=[edge_trace, node_trace],
+                            layout=go.Layout(
+                                showlegend=False,
+                                hovermode="closest",
+                                paper_bgcolor="rgba(0,0,0,0)",
+                                plot_bgcolor="rgba(0,0,0,0)",
+                                xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[-1.5, 1.5]),
+                                yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[-1.5, 1.5]),
+                                height=480,
+                                margin=dict(l=10, r=10, t=10, b=10),
+                            )
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+
+                    except ImportError:
+                        st.info("Install plotly to see the visual graph.")
 
                 if edges:
                     st.markdown("**Strongest connections:**")
-                    # Sort by weight descending, show top 15
                     sorted_edges = sorted(edges, key=lambda e: e.get("weight", 0), reverse=True)
                     for edge in sorted_edges[:15]:
-                        reason = edge.get("reason", "")
-                        st.write(
-                            f"• **{edge['source']}** ↔ **{edge['target']}**"
-                            + (f" ({reason})" if reason else "")
-                        )
+                        label = edge.get("label", "")
+                        src = id_to_label.get(edge["source"], edge["source"])
+                        tgt = id_to_label.get(edge["target"], edge["target"])
+                        st.write(f"• **{src}** ↔ **{tgt}**" + (f" — *{label}*" if label else ""))
                 else:
                     st.info("No shared authors or keywords found between these papers. "
                             "Try uploading papers from the same research group.")

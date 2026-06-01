@@ -1,6 +1,6 @@
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import create_engine, Column, String, DateTime, ForeignKey, Integer, Float, Text, Boolean
 from sqlalchemy.orm import declarative_base, sessionmaker
 
@@ -42,7 +42,7 @@ class User(Base):
     team_code = Column(String, index=True, nullable=False)
     tenant_id = Column(String, index=True, nullable=False) # Derived from team_code
 
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 class UsageLog(Base):
     """Production observability model for tracking API consumption and metrics."""
@@ -60,7 +60,7 @@ class UsageLog(Base):
     estimated_cost_usd = Column(Float, default=0.0)
 
     metrics_json = Column(Text) # JSON string for faithfulness, latency, etc.
-    timestamp = Column(DateTime, default=datetime.utcnow)
+    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 class TraceLog(Base):
     """Deep observability model for debugging RAG pipeline internals."""
@@ -83,8 +83,8 @@ class Note(Base):
     user_id = Column(String, ForeignKey("users.id"), nullable=False)
     title = Column(String, nullable=False, default="Untitled Note")
     content = Column(Text, nullable=False, default="")
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class PaperSummary(Base):
@@ -95,7 +95,7 @@ class PaperSummary(Base):
     tenant_id = Column(String, index=True, nullable=False)
     filename = Column(String, index=True, nullable=False)
     summary = Column(Text, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class PaperDetails(Base):
@@ -119,7 +119,7 @@ class PaperDetails(Base):
     dataset      = Column(Text, nullable=True)
     baselines    = Column(Text, nullable=True)  # JSON array string
     limitations  = Column(Text, nullable=True)
-    created_at   = Column(DateTime, default=datetime.utcnow)
+    created_at   = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class PaperReference(Base):
@@ -135,7 +135,7 @@ class PaperReference(Base):
     ref_year        = Column(Integer, nullable=True)
     ref_doi         = Column(String, nullable=True)
     arxiv_id        = Column(String, nullable=True) # inferred so user can one-click ingest
-    extracted_at    = Column(DateTime, default=datetime.utcnow)
+    extracted_at    = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class ReadingQueueItem(Base):
@@ -153,7 +153,7 @@ class ReadingQueueItem(Base):
     notes     = Column(Text, default="")
     # "queued" | "reading" | "done"
     status    = Column(String, default="queued", index=True)
-    added_at  = Column(DateTime, default=datetime.utcnow)
+    added_at  = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class ArxivMonitor(Base):
@@ -168,7 +168,7 @@ class ArxivMonitor(Base):
     keywords       = Column(Text, nullable=False)
     last_checked_at = Column(DateTime, nullable=True)
     is_active      = Column(Boolean, default=True)
-    created_at     = Column(DateTime, default=datetime.utcnow)
+    created_at     = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class ArxivAlert(Base):
@@ -185,7 +185,7 @@ class ArxivAlert(Base):
     authors      = Column(Text, nullable=True)   # JSON array string
     published_at = Column(String, nullable=True)
     is_read      = Column(Boolean, default=False)
-    created_at   = Column(DateTime, default=datetime.utcnow)
+    created_at   = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 def init_db():

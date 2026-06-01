@@ -1,0 +1,279 @@
+name: Benchmark Gate
+
+# Runs on every PR targeting main and on pushes to main.
+# Blocks merge if any hard threshold is breached or a critical regression is detected.
+# Quality checks are marked N/A when the test vault is empty.
+# On main merge: saves results as the new regression baseline artifact.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  benchmark-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      # ── Checkout ─────────────────────────────────────────────────────────────
+      - uses: actions/checkout@v4
+
+      # ── Minimal .env so docker compose can start ──────────────────────────
+      - name: Create CI environment file
+        run: |
+          cat > .env << 'EOF'
+          POSTGRES_DB=researhub
+          POSTGRES_USER=researhub
+          POSTGRES_PASSWORD=ci-test-password
+          JWT_SECRET_KEY=${{ secrets.JWT_SECRET_KEY || 'ci-jwt-secret-not-for-production' }}
+          OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
+          GENERATION_MODEL=gpt-4o-mini
+          BENCHMARK_TENANT_ID=ci-benchmark
+          LANGCHAIN_API_KEY=${{ secrets.LANGCHAIN_API_KEY }}
+          LANGCHAIN_TRACING_V2=true
+          LANGCHAIN_PROJECT=researchhub-benchmarking
+          EOF
+
+      # ── Start Docker stack ────────────────────────────────────────────────
+      - name: Start Docker stack
+        run: docker compose up -d --build
+
+      # ── Wait for API health (max 90 s) ───────────────────────────────────
+      - name: Wait for API health
+        run: |
+          echo "Waiting for API to become healthy..."
+          for i in $(seq 1 45); do
+            if curl -sf http://localhost:8000/api/v1/health > /dev/null 2>&1; then
+              echo "API healthy after $((i * 2))s"
+              break
+            fi
+            if [ "$i" -eq 45 ]; then
+              echo "ERROR: API did not become healthy within 90s"
+              docker compose logs api --tail=50
+              exit 1
+            fi
+            sleep 2
+          done
+
+      # ── Python for HTTP-based scripts (no app deps needed) ────────────────
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install benchmark HTTP deps
+        run: pip install httpx httpx-sse
+
+      # ── Eval dataset run (HTTP-based, no app imports) ─────────────────────
+      # Sends eval_dataset.json questions to the live API and measures
+      # retrieval quality. Fails if overall pass rate < 80%.
+      - name: Run evaluation dataset
+        run: |
+          python benchmarking/eval_runner.py --quick \
+            --url http://localhost:8000/api/v1
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+      - name: Check eval pass rate
+        run: |
+          python - << 'PYEOF'
+          import json, sys
+          with open("benchmarking/results/eval_results.json") as f:
+              r = json.load(f)
+          rate = r["overall_pass_rate"]
+          vault_empty = r.get("vault_empty", False)
+          print(f"Eval pass rate : {rate:.1%}")
+          print(f"Vault empty    : {vault_empty}")
+          if vault_empty:
+              print("Vault is empty — eval skipped (N/A)")
+              sys.exit(0)
+          if rate < 0.80:
+              print(f"FAIL: pass rate {rate:.1%} < 80% threshold")
+              sys.exit(1)
+          print("PASS: eval pass rate acceptable")
+          PYEOF
+
+      # ── Quality benchmark (needs Qdrant access, runs inside container) ────
+      - name: Run quality benchmark
+        run: |
+          docker compose exec -T api \
+            python -m benchmarking.quality_evaluator \
+            --dataset /app/benchmarking/eval_dataset.json \
+            --tenant ci-benchmark \
+            --output /tmp/results.json
+
+      # ── Latency benchmark ─────────────────────────────────────────────────
+      - name: Run latency benchmark
+        run: |
+          docker compose exec -T api \
+            python -m benchmarking.latency_profiler \
+            --tenant ci-benchmark \
+            --n 5 \
+            --output /tmp/latency.json
+
+      # ── Worker benchmark ──────────────────────────────────────────────────
+      - name: Run worker benchmark
+        run: |
+          docker compose exec -T api \
+            python -m benchmarking.worker_benchmarker \
+            --redis-url redis://redis:6379/0 \
+            --output /tmp/worker_results.json
+
+      # ── Copy result files from container to runner ────────────────────────
+      - name: Copy benchmark results from container
+        run: |
+          CONTAINER=$(docker compose ps -q api)
+          docker cp "$CONTAINER":/tmp/results.json ./results.json
+          docker cp "$CONTAINER":/tmp/latency.json ./latency.json
+          docker cp "$CONTAINER":/tmp/worker_results.json ./worker_results.json
+
+      # ── Download baseline artifact (continues even if first run / missing) ─
+      # baseline.json is stored as a GitHub Actions artifact from main merges.
+      # On the first run no baseline exists — that is OK, the regression check
+      # will print "No baseline found" and skip the comparison.
+      - name: Download baseline artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: benchmark-baseline
+          path: benchmarking/baseline/
+        continue-on-error: true
+
+      # ── Threshold check + regression detection ────────────────────────────
+      # check_gate.py reads the JSON files, prints a markdown table, compares
+      # against thresholds.json, and (if a baseline exists) runs regression
+      # detection via baseline_manager.py.
+      # Exit codes: 0=pass, 1=fail/critical, 2=bad args, 3=warning only
+      - name: Check gate thresholds and regressions
+        id: gate
+        run: |
+          python benchmarking/check_gate.py \
+            results.json latency.json benchmarking/thresholds.json worker_results.json \
+            > gate_output.txt 2>&1 || GATE_EXIT=$?
+          echo "gate_exit=${GATE_EXIT:-0}" >> $GITHUB_OUTPUT
+          cat gate_output.txt
+        # Do NOT use '|| true' here — we want the real exit code captured above
+
+      # ── Post benchmark results as PR comment ──────────────────────────────
+      - name: Post benchmark results as PR comment
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let gateOutput = '';
+            try {
+              gateOutput = fs.readFileSync('gate_output.txt', 'utf8').trim();
+            } catch (e) {
+              gateOutput = '_Benchmark output not available._';
+            }
+
+            // Parse eval results
+            let evalSummary = '';
+            try {
+              const eval = JSON.parse(fs.readFileSync('benchmarking/results/eval_results.json', 'utf8'));
+              const rate = (eval.overall_pass_rate * 100).toFixed(1);
+              const icon = eval.gate_passed ? '✅' : '❌';
+              evalSummary = `\n**Eval dataset:** ${icon} ${eval.passed}/${eval.total_questions} passed (${rate}%)`;
+            } catch (e) {}
+
+            const commit = context.sha.slice(0, 7);
+            const gateIcon = '${{ steps.gate.outputs.gate_exit }}' === '0' ? '✅ PASS' : '❌ FAIL';
+            const body = [
+              `## Benchmark Gate Results — ${gateIcon}`,
+              '',
+              evalSummary,
+              '',
+              '```',
+              gateOutput,
+              '```',
+              '',
+              `_Commit \`${commit}\` · PR #${context.issue.number}_`,
+            ].join('\n');
+
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body,
+            });
+
+      # ── Enforce exit code — fails the PR check if gate failed ─────────────
+      # Exit code 3 (warning regressions) does NOT block the PR.
+      # Exit codes 1 and 2 block it.
+      - name: Enforce gate result
+        run: |
+          EXIT="${{ steps.gate.outputs.gate_exit }}"
+          if [ "$EXIT" = "1" ] || [ "$EXIT" = "2" ]; then
+            echo "Gate FAILED (exit $EXIT). Merge is blocked."
+            exit 1
+          elif [ "$EXIT" = "3" ]; then
+            echo "Gate PASSED with warnings (exit 3). Merge is allowed."
+            exit 0
+          else
+            echo "Gate PASSED (exit $EXIT)."
+            exit 0
+          fi
+
+      # ── Upload benchmark results as artifact (always, for debugging) ──────
+      - name: Upload benchmark results artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmark-results-${{ github.sha }}
+          path: |
+            results.json
+            latency.json
+            worker_results.json
+            benchmarking/results/eval_results.json
+            gate_output.txt
+          retention-days: 30
+
+      # ── Save new baseline artifact on main merge only ─────────────────────
+      # Only saves when: (a) this is a push to main, (b) gate passed (exit 0 or 3).
+      # This baseline is downloaded by future PRs for regression comparison.
+      - name: Save baseline on main merge
+        if: github.ref == 'refs/heads/main' && (steps.gate.outputs.gate_exit == '0' || steps.gate.outputs.gate_exit == '3')
+        run: |
+          mkdir -p benchmarking/baseline
+          # Combine results into a single baseline snapshot
+          python - << 'PYEOF'
+          import json, subprocess
+          from pathlib import Path
+          from datetime import datetime, timezone
+
+          commit = subprocess.run(
+              ["git", "rev-parse", "--short", "HEAD"],
+              capture_output=True, text=True
+          ).stdout.strip()
+
+          results = {}
+          for f in ["results.json", "latency.json", "worker_results.json"]:
+              try:
+                  results[f.replace(".json", "")] = json.loads(Path(f).read_text())
+              except Exception:
+                  pass
+
+          baseline = {
+              "saved_at": datetime.now(timezone.utc).isoformat(),
+              "git_commit": commit,
+              "results": results,
+          }
+          Path("benchmarking/baseline/baseline.json").write_text(
+              json.dumps(baseline, indent=2)
+          )
+          print(f"Baseline saved (commit: {commit})")
+          PYEOF
+
+      - name: Upload new baseline artifact
+        if: github.ref == 'refs/heads/main' && (steps.gate.outputs.gate_exit == '0' || steps.gate.outputs.gate_exit == '3')
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-baseline
+          path: benchmarking/baseline/baseline.json
+          retention-days: 90
+
+      # ── Always dump container logs on failure for debugging ───────────────
+      - name: Dump container logs on failure
+        if: failure()
+        run: docker compose logs --tail=100

@@ -1,0 +1,92 @@
+[
+  {
+    "id": "structural_001",
+    "question": "What is this paper about?",
+    "ground_truth": null,
+    "complexity": "simple",
+    "query_type": "chat",
+    "eval_mode": "retrieval_check",
+    "note": "Any paper in vault should return chunks. Tests non-empty retrieval."
+  },
+  {
+    "id": "structural_002",
+    "question": "Who wrote this paper?",
+    "ground_truth": null,
+    "complexity": "simple",
+    "query_type": "chat",
+    "eval_mode": "retrieval_check",
+    "note": "Author information should be in header chunks of any uploaded paper."
+  },
+  {
+    "id": "structural_003",
+    "question": "What methodology did the authors use?",
+    "ground_truth": null,
+    "complexity": "simple",
+    "query_type": "chat",
+    "eval_mode": "retrieval_check",
+    "note": "Methodology section exists in every research paper."
+  },
+  {
+    "id": "structural_004",
+    "question": "What were the main results or findings?",
+    "ground_truth": null,
+    "complexity": "simple",
+    "query_type": "chat",
+    "eval_mode": "retrieval_check",
+    "note": "Results section exists in every research paper."
+  },
+  {
+    "id": "structural_005",
+    "question": "What dataset or benchmark was used for evaluation?",
+    "ground_truth": null,
+    "complexity": "simple",
+    "query_type": "chat",
+    "eval_mode": "retrieval_check",
+    "note": "Experimental setup section exists in every ML/CS paper."
+  },
+  {
+    "id": "structural_006",
+    "question": "What are the limitations of this work?",
+    "ground_truth": null,
+    "complexity": "multi-hop",
+    "query_type": "literature_review",
+    "eval_mode": "retrieval_check",
+    "note": "Limitations are stated in conclusion or discussion in most papers."
+  },
+  {
+    "id": "structural_007",
+    "question": "How does this approach compare to prior work?",
+    "ground_truth": null,
+    "complexity": "multi-hop",
+    "query_type": "literature_review",
+    "eval_mode": "retrieval_check",
+    "note": "Related work or baseline comparison exists in every research paper."
+  },
+  {
+    "id": "structural_008",
+    "question": "What future work do the authors suggest?",
+    "ground_truth": null,
+    "complexity": "multi-hop",
+    "query_type": "literature_review",
+    "eval_mode": "retrieval_check",
+    "note": "Future work is mentioned in conclusion of most papers."
+  },
+  {
+    "id": "structural_009",
+    "question": "Compare the approaches used across papers in the vault.",
+    "ground_truth": null,
+    "complexity": "synthesis",
+    "query_type": "comparison",
+    "eval_mode": "multi_paper_check",
+    "note": "Requires at least 2 papers in vault. Tests cross-paper retrieval coverage."
+  },
+  {
+    "id": "structural_010",
+    "question": "Which paper presents the strongest experimental evidence?",
+    "ground_truth": null,
+    "complexity": "synthesis",
+    "query_type": "comparison",
+    "eval_mode": "multi_paper_check",
+    "note": "Requires at least 2 papers in vault. Tests ranking and synthesis ability."
+  }
+]

@@ -62,6 +62,26 @@ async def call_model(state: ResearchState):
         messages = [system_msg] + messages
 
     response = await llm_with_tools.ainvoke(messages)
+
+    # Enforce tenant_id and filename_filter in every vault tool call.
+    # The LLM may omit tenant_id or filename even when instructed — patching here
+    # guarantees the correct values reach search_vdb regardless of LLM behavior.
+    _tenant_id = state.get("tenant_id", "default")
+    _filename_filter = state.get("filename_filter")
+    print(f"GRAPH: call_model — filename_filter={_filename_filter!r}, tool_calls={[tc['name'] for tc in response.tool_calls] if response.tool_calls else []}")
+    if response.tool_calls:
+        patched = []
+        for tc in response.tool_calls:
+            if tc["name"] in ("rag_tool", "auto_ingest_paper_tool", "list_vault_papers_tool"):
+                args = dict(tc.get("args", {}))
+                args["tenant_id"] = _tenant_id
+                if tc["name"] == "rag_tool" and _filename_filter:
+                    args["filename"] = _filename_filter
+                patched.append({**tc, "args": args})
+            else:
+                patched.append(tc)
+        response = response.model_copy(update={"tool_calls": patched})
+
     return {"messages": [response]}
 
 # Define the Tool Node

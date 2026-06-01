@@ -95,14 +95,14 @@ async def search_vdb(
     filter_conditions = [rest.FieldCondition(key="tenant_id", match=rest.MatchValue(value=tenant_id))]
 
     if filters:
-        # Years: only apply if they are not the extremely broad defaults (1990/2025)
-        # We also allow points with null years to be included by default in these range searches
-        if filters.year_min and filters.year_min > 1990:
+        # Apply year filters whenever they are explicitly set.
+        # Chunks with null years pass through both filters (Qdrant skips null fields on range checks).
+        if filters.year_min is not None:
             filter_conditions.append(rest.FieldCondition(
                 key="metadata.year",
                 range=rest.Range(gte=filters.year_min)
             ))
-        if filters.year_max and filters.year_max < 2025:
+        if filters.year_max is not None:
             filter_conditions.append(rest.FieldCondition(
                 key="metadata.year",
                 range=rest.Range(lte=filters.year_max)

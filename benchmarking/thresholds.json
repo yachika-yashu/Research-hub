@@ -1,0 +1,11 @@
+{
+  "faithfulness": 0.82,
+  "context_recall": 0.78,
+  "p99_latency_ms": 5000,
+  "cost_per_query_usd": 0.008,
+  "worker_p99_ms": 30000,
+  "pii_leak_rate": 0.0,
+  "injection_block_rate": 0.95
+}
+
+

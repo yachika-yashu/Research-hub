@@ -33,4 +33,15 @@ scratch/
 .DS_Store
 Thumbs.db
 docs
+notes
 
+# Benchmark runtime output — generated files, not source
+benchmarking/results/*.json
+benchmarking/results/*.csv
+benchmarking/snapshots/
+benchmarking/ab_results_*.csv
+benchmarking/drift_report.html
+benchmarking/_ref_split.jsonl
+benchmarking/_cur_split.jsonl
+benchmarking/baseline/*.json
+benchmarking/baseline_history/*.json

@@ -18,7 +18,7 @@ def setup_logging():
 
     # 2. File Handler (for local persistence) Writes logs to file
     file_handler = RotatingFileHandler(      #the handler rotates it by renaming the current log file and opening a new, empty file to continue logging. if file size exceeds maxBytes, oldest file in the sequence is deleted to make room for the new one.
-        "logs/research hub.log", maxBytes=10*1024*1024, backupCount=5
+        "logs/researchhub.log", maxBytes=10*1024*1024, backupCount=5
     ) # 10MB max file size, 5 backup files
     file_handler.setFormatter(log_formatter) #Applies the format you defined
 
@@ -35,6 +35,6 @@ def setup_logging():
     logging.getLogger("httpx").setLevel(logging.WARNING) #httpx is for http requests
     logging.getLogger("docling").setLevel(logging.INFO) #docling is for document processing
 
-    logging.info("Logging system initialized (research hub v1.1.2)")
+    logging.info("Logging system initialized (ResearchHub v1.1.2)")
 
-logger = logging.getLogger("research hub")
+logger = logging.getLogger("ResearchHub")

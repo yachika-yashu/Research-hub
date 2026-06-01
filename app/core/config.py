@@ -54,7 +54,7 @@ TOKEN_ENCODER = tiktoken.get_encoding("cl100k_base")
 # Use the same relational backend shape in local and production: PostgreSQL.
 # Local development should point at localhost; containers override the hostname.
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://researhub:change_me_local@localhost:5432/researhub")
-CHECKPOINTS_DB_URL = os.getenv("CHECKPOINTS_DB_URL", "checkpoints.db") # used in main.py
+CHECKPOINTS_DB_URL = os.getenv("CHECKPOINTS_DB_URL", DATABASE_URL) # used in main.py — must be a PostgreSQL URL (AsyncPostgresSaver requires it)
 
 # Redis is used as a low-latency exact cache. Semantic cache remains in Qdrant.
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0") #If REDIS_URL exists in .env file → use itOtherwise → default to localhost

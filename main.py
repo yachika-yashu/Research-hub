@@ -47,12 +47,20 @@ async def lifespan(app: FastAPI):
     # 2. Compile the graph once and attach a checkpoint backend. We keep SQLite
     # here for compatibility, but the location is now environment-configurable.
     # Postgres uses a connection pool.
+    # psycopg_pool.AsyncConnectionPool accepts postgresql:// and postgres:// equally.
+    # prepare_threshold=0 disables server-side prepared statements, which is required
+    # by LangGraph's AsyncPostgresSaver — it issues multi-statement transactions that
+    # are incompatible with the prepared-statement protocol.
+    _pg_conninfo = CHECKPOINTS_DB_URL
+    if "+psycopg" in _pg_conninfo:
+        _pg_conninfo = _pg_conninfo.replace("postgresql+psycopg://", "postgresql://")
     pool = AsyncConnectionPool(
-        conninfo=CHECKPOINTS_DB_URL.replace("postgresql://", "postgres://"),
+        conninfo=_pg_conninfo,
         max_size=20,
-        kwargs={"autocommit": True}
+        kwargs={"autocommit": True, "prepare_threshold": 0},
+        open=False,
     )
-    await pool.open()
+    await pool.open(wait=True)
 
     memory = AsyncPostgresSaver(pool)
     await memory.setup()
