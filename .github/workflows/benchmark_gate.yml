@@ -15,6 +15,11 @@ jobs:
   benchmark-gate:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    # Surfaces the secret as a job-level env var so step `if:` expressions can
+    # check whether OpenAI is configured. Empty string when the secret isn't
+    # set, in which case the OpenAI-dependent benchmark steps skip.
+    env:
+      HAS_OPENAI_KEY: ${{ secrets.OPENAI_API_KEY != '' }}
 
     steps:
       # ── Checkout ─────────────────────────────────────────────────────────────
@@ -74,7 +79,10 @@ jobs:
       # ── Eval dataset run (HTTP-based, no app imports) ─────────────────────
       # Sends eval_dataset.json questions to the live API and measures
       # retrieval quality. Fails if overall pass rate < 80%.
+      # Skipped when no OPENAI_API_KEY secret is configured — the eval needs
+      # real model calls; running it with a missing key just burns 4 minutes.
       - name: Run evaluation dataset
+        if: env.HAS_OPENAI_KEY == 'true'
         run: |
           python benchmarking/eval_runner.py --quick \
             --url http://localhost:8000/api/v1
@@ -82,6 +90,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 
       - name: Check eval pass rate
+        if: env.HAS_OPENAI_KEY == 'true'
         run: |
           python - << 'PYEOF'
           import json, sys
@@ -102,6 +111,7 @@ jobs:
 
       # ── Quality benchmark (needs Qdrant access, runs inside container) ────
       - name: Run quality benchmark
+        if: env.HAS_OPENAI_KEY == 'true'
         run: |
           docker compose exec -T api \
             python -m benchmarking.quality_evaluator \
@@ -111,6 +121,7 @@ jobs:
 
       # ── Latency benchmark ─────────────────────────────────────────────────
       - name: Run latency benchmark
+        if: env.HAS_OPENAI_KEY == 'true'
         run: |
           docker compose exec -T api \
             python -m benchmarking.latency_profiler \
@@ -120,6 +131,7 @@ jobs:
 
       # ── Worker benchmark ──────────────────────────────────────────────────
       - name: Run worker benchmark
+        if: env.HAS_OPENAI_KEY == 'true'
         run: |
           docker compose exec -T api \
             python -m benchmarking.worker_benchmarker \
@@ -128,6 +140,7 @@ jobs:
 
       # ── Copy result files from container to runner ────────────────────────
       - name: Copy benchmark results from container
+        if: env.HAS_OPENAI_KEY == 'true'
         run: |
           CONTAINER=$(docker compose ps -q api)
           docker cp "$CONTAINER":/tmp/results.json ./results.json
@@ -139,6 +152,7 @@ jobs:
       # On the first run no baseline exists — that is OK, the regression check
       # will print "No baseline found" and skip the comparison.
       - name: Download baseline artifact
+        if: env.HAS_OPENAI_KEY == 'true'
         uses: actions/download-artifact@v4
         with:
           name: benchmark-baseline
@@ -152,6 +166,7 @@ jobs:
       # Exit codes: 0=pass, 1=fail/critical, 2=bad args, 3=warning only
       - name: Check gate thresholds and regressions
         id: gate
+        if: env.HAS_OPENAI_KEY == 'true'
         run: |
           python benchmarking/check_gate.py \
             results.json latency.json benchmarking/thresholds.json worker_results.json \
@@ -160,9 +175,19 @@ jobs:
           cat gate_output.txt
         # Do NOT use '|| true' here — we want the real exit code captured above
 
+      # ── Smoke-only mode: when no OpenAI key is configured, surface that the
+      # api booted healthy and skip the rest of the gate. Lets contributors
+      # without an OpenAI secret still get a green check on PRs.
+      - name: Smoke-only summary (no OpenAI key)
+        if: env.HAS_OPENAI_KEY != 'true'
+        run: |
+          echo "OPENAI_API_KEY secret is not configured for this repo."
+          echo "API container booted and /api/v1/health responded — benchmark steps skipped."
+          echo "Set the OPENAI_API_KEY secret to enable full quality/latency/worker benchmarks."
+
       # ── Post benchmark results as PR comment ──────────────────────────────
       - name: Post benchmark results as PR comment
-        if: always() && github.event_name == 'pull_request'
+        if: always() && github.event_name == 'pull_request' && env.HAS_OPENAI_KEY == 'true'
         uses: actions/github-script@v7
         with:
           script: |
@@ -208,6 +233,7 @@ jobs:
       # Exit code 3 (warning regressions) does NOT block the PR.
       # Exit codes 1 and 2 block it.
       - name: Enforce gate result
+        if: env.HAS_OPENAI_KEY == 'true'
         run: |
           EXIT="${{ steps.gate.outputs.gate_exit }}"
           if [ "$EXIT" = "1" ] || [ "$EXIT" = "2" ]; then
@@ -236,10 +262,10 @@ jobs:
           retention-days: 30
 
       # ── Save new baseline artifact on main merge only ─────────────────────
-      # Only saves when: (a) this is a push to main, (b) gate passed (exit 0 or 3).
-      # This baseline is downloaded by future PRs for regression comparison.
+      # Only saves when: (a) this is a push to main, (b) gate passed (exit 0 or 3),
+      # (c) the OpenAI key was set so benchmarks actually ran.
       - name: Save baseline on main merge
-        if: github.ref == 'refs/heads/main' && (steps.gate.outputs.gate_exit == '0' || steps.gate.outputs.gate_exit == '3')
+        if: env.HAS_OPENAI_KEY == 'true' && github.ref == 'refs/heads/main' && (steps.gate.outputs.gate_exit == '0' || steps.gate.outputs.gate_exit == '3')
         run: |
           mkdir -p benchmarking/baseline
           # Combine results into a single baseline snapshot
@@ -272,7 +298,7 @@ jobs:
           PYEOF
 
       - name: Upload new baseline artifact
-        if: github.ref == 'refs/heads/main' && (steps.gate.outputs.gate_exit == '0' || steps.gate.outputs.gate_exit == '3')
+        if: env.HAS_OPENAI_KEY == 'true' && github.ref == 'refs/heads/main' && (steps.gate.outputs.gate_exit == '0' || steps.gate.outputs.gate_exit == '3')
         uses: actions/upload-artifact@v4
         with:
           name: benchmark-baseline
