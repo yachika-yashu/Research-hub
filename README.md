@@ -3,7 +3,7 @@
 [![CI](https://github.com/yachika-yashu/Research-hub/actions/workflows/ci.yml/badge.svg)](https://github.com/yachika-yashu/Research-hub/actions/workflows/ci.yml)
 [![Benchmark Gate](https://github.com/yachika-yashu/Research-hub/actions/workflows/benchmark_gate.yml/badge.svg)](https://github.com/yachika-yashu/Research-hub/actions/workflows/benchmark_gate.yml)
 
-A production-grade AI research assistant for academics and engineers. Upload PDFs, chat with your papers, run literature reviews, monitor Arxiv — all in one self-hosted platform.
+A production-grade AI research assistant for academics and engineers. Upload PDFs, chat with your papers, run literature reviews, monitor Arxiv — all in one self-hosted platform..
 
 Built with FastAPI · LangGraph · Qdrant · Redis · PostgreSQL · Streamlit · Docker
 
