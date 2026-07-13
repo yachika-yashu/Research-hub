@@ -265,9 +265,6 @@ research-hub/
 │   └── profile_hotspots.py          # cProfile hot-path analysis
 ├── tests/
 │   └── test_logic.py                # Unit tests (no external services required)
-├── docs/
-│   ├── hiring.md                    # Technical hiring presentation guide
-│   └── friend.md                    # Hinglish technical walkthrough
 ├── dashboard.py                     # Streamlit UI (entire frontend)
 ├── main.py                          # FastAPI app entry point
 ├── docker-compose.yml               # Development setup (7 services)
