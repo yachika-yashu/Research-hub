@@ -88,32 +88,64 @@ async def stream_ingestion_status(
     request: Request,
     current_user: User = Depends(get_current_user)
 ):
-    """Stream progress events from the background worker via Redis Pub/Sub."""
+    """
+    Stream progress events from the background worker via a Redis Stream.
+
+    Reading from id "0" replays every event the worker has already emitted, so
+    a client that connects after ingestion started still sees the full progress
+    history. (Pub/Sub silently dropped those early events.)
+    """
     import redis.asyncio as redis
     from app.core.config import REDIS_URL
 
     async def event_generator():
         redis_client = redis.from_url(REDIS_URL, decode_responses=True)
-        pubsub = redis_client.pubsub()
-        await pubsub.subscribe(f"ingest:{job_id}")
+        stream = f"ingest:{job_id}"
+        last_id = "0"  # replay from the very beginning of the stream
 
         try:
-            async for message in pubsub.listen():
-                if message["type"] == "message":
-                    data = message["data"]
-                    if isinstance(data, str):
+            while True:
+                if await request.is_disconnected():
+                    break
+
+                # Block briefly rather than indefinitely so we can emit
+                # keep-alives and notice client disconnects.
+                entries = await redis_client.xread({stream: last_id}, count=100, block=15000)
+                if not entries:
+                    yield ": keep-alive\n\n"
+                    continue
+
+                terminal = False
+                for _stream_name, messages in entries:
+                    for message_id, fields in messages:
+                        last_id = message_id
+                        data = fields.get("data")
+                        if not data:
+                            continue
                         try:
                             json_data = json.loads(data)
-                            yield f"data: {data}\n\n"
-                            if json_data.get("type") in ["completed", "error", "eof"]:
-                                break
                         except json.JSONDecodeError:
-                            pass
+                            continue
+                        yield f"data: {data}\n\n"
+                        if json_data.get("type") in ("completed", "error", "eof"):
+                            terminal = True
+                            break
+                    if terminal:
+                        break
+                if terminal:
+                    break
         finally:
-            await pubsub.unsubscribe()
             await redis_client.close()
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # stop reverse proxies buffering the stream
+        },
+    )
 
 
 @router.post("/ingest/arxiv")

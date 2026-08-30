@@ -360,6 +360,7 @@ async def fetch_alerts() -> list:
 
 async def ingest_file_with_progress(file):
     """Upload a single PDF, stream worker progress, return result dict or None."""
+    progress_bar = None
     try:
         upload_timeout = httpx.Timeout(connect=10.0, read=120.0, write=120.0, pool=10.0)
         sse_timeout    = httpx.Timeout(connect=10.0, read=None,  write=30.0,  pool=10.0)
@@ -370,7 +371,6 @@ async def ingest_file_with_progress(file):
             r = await upload_client.post(f"{API_BASE_URL}/ingest", files=files, headers=get_headers())
             if r.status_code != 200:
                 st.error(f"Failed to enqueue {file.name}: {r.text}")
-                progress_bar.empty()
                 return None
             job_id = r.json().get("job_id")
 
@@ -378,19 +378,29 @@ async def ingest_file_with_progress(file):
             async with aconnect_sse(sse_client, "GET", f"{API_BASE_URL}/ingest/stream/{job_id}",
                                     headers=get_headers()) as es:
                 async for ev in es.aiter_sse():
+                    if not ev.data:
+                        continue  # keep-alive comment
                     data = json.loads(ev.data)
                     if data.get("type") == "progress":
                         progress_bar.progress(data["value"] / 100, text=data["message"])
                     elif data.get("type") == "completed":
-                        progress_bar.empty()
                         return data["result"]
                     elif data.get("type") == "error":
                         st.error(data["message"])
-                        progress_bar.empty()
                         return None
+                    elif data.get("type") == "eof":
+                        break
+
+        # Stream ended without a completed/error event — the worker died or the
+        # connection was cut. Surface it instead of silently doing nothing.
+        st.error(f"Ingestion stream for {file.name} ended before completion.")
+        return None
     except Exception as e:
         st.error(f"Ingestion failed for {file.name}: {e}")
         return None
+    finally:
+        if progress_bar is not None:
+            progress_bar.empty()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

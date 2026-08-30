@@ -1,7 +1,7 @@
 .env
 .env.*
 !.env.example
-
+assets
 venv/
 __pycache__/
 *.pyc
@@ -34,7 +34,7 @@ scratch/
 Thumbs.db
 docs
 notes
-
+*.db
 # Benchmark runtime output — generated files, not source
 benchmarking/results/*.json
 benchmarking/results/*.csv

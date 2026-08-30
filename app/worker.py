@@ -41,36 +41,49 @@ async def shutdown(ctx):
     if "redis" in ctx:
         await ctx["redis"].close()
 
+# Progress events live in a Redis Stream for INGEST_STREAM_TTL seconds so a
+# subscriber that connects after the worker has already started can replay
+# everything from the beginning. Pub/Sub cannot do this: it drops any message
+# published while no subscriber is attached, which silently lost the early
+# progress events (and sometimes the terminal one) on fast ingestions.
+INGEST_STREAM_TTL = 3600
+
+
 async def process_ingestion_task(ctx, file_content: bytes, filename: str, user_id: int, tenant_id: str, job_id: str):
     """
     Background task to process PDF ingestion.
-    Publishes JSON progress events to the Redis channel `ingest:{job_id}`.
+    Appends JSON progress events to the Redis stream `ingest:{job_id}`.
     """
     import json
     from app.core.database import get_db, User
     from app.services.ingestion import stream_process_ingestion
 
     redis_client = ctx["redis"]
-    channel = f"ingest:{job_id}"
+    stream = f"ingest:{job_id}"
+
+    async def emit(event: dict):
+        await redis_client.xadd(stream, {"data": json.dumps(event)})
 
     # Retrieve user from DB
     db = next(get_db())
     try:
         user = db.query(User).filter(User.id == user_id).first()
         if not user:
-            await redis_client.publish(channel, json.dumps({"type": "error", "message": "User not found"}))
+            await emit({"type": "error", "message": "User not found"})
             return
 
         async for event in stream_process_ingestion(file_content, filename, user, db):
-            await redis_client.publish(channel, json.dumps(event))
+            await emit(event)
 
     except Exception as e:
         import traceback
-        await redis_client.publish(channel, json.dumps({"type": "error", "message": f"{type(e).__name__}: {e}\n{traceback.format_exc()}"}))
+        await emit({"type": "error", "message": f"{type(e).__name__}: {e}\n{traceback.format_exc()}"})
     finally:
         db.close()
-        # Publish an end marker so subscribers can close connection
-        await redis_client.publish(channel, json.dumps({"type": "eof"}))
+        # End marker so subscribers can close the connection, then expire the
+        # whole stream so completed jobs do not accumulate in Redis.
+        await emit({"type": "eof"})
+        await redis_client.expire(stream, INGEST_STREAM_TTL)
 
 async def check_arxiv_monitors_task(ctx):
     """
